@@ -423,15 +423,20 @@ Add a specified function as a before advice to each command in the list."
 
 (defun km-py--advice-show-shell-buffer (&rest _)
   "Display Python shell buffer if not already visible."
-  (when-let ((buff (python-shell-get-buffer)))
-    (unless (get-buffer-window buff)
-      (with-selected-window
-          (let ((wind (selected-window)))
-            (or
-             (window-right wind)
-             (window-left wind)
-             (progn (split-window-sensibly) wind)))
-        (pop-to-buffer-same-window buff)))))
+  (when-let* ((buff (python-shell-get-buffer))
+              (wnd (or (get-buffer-window buff)
+                       (with-selected-window
+                           (let ((wind (selected-window)))
+                             (or
+                              (window-right wind)
+                              (window-left wind)
+                              (progn (split-window-right) wind)))
+                         (pop-to-buffer-same-window buff)
+                         (selected-window)))))
+    (with-selected-window wnd
+      (goto-char (point-max))
+      (set-window-point (selected-window)
+                        (point-max)))))
 
 (defun km-py--unadvice-shell-commands-to-pop-buffer ()
   "Remove advice from Python shell commands."
@@ -445,18 +450,7 @@ Add a specified function as a before advice to each command in the list."
   (unless (python-shell-get-process)
     (let ((current-prefix-arg '(4)))
       (call-interactively #'run-python)))
-  (python-shell-send-buffer t)
-  (when-let* ((proc (python-shell-get-process))
-              (buff (and (process-live-p proc)
-                         (process-buffer proc))))
-    (unless (get-buffer-window buff)
-      (with-selected-window
-          (let ((wind (selected-window)))
-            (or
-             (window-right wind)
-             (window-left wind)
-             (progn (split-window-sensibly) wind)))
-        (pop-to-buffer-same-window buff)))))
+  (python-shell-send-buffer t))
 
 ;;;###autoload
 (defun km-py-advice-shell-commands ()
