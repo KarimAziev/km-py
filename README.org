@@ -1,0 +1,67 @@
+#+OPTIONS: ^:nil tags:nil num:nil
+
+* About
+
+=km-py.el= is a utility library that enhances the Python development experience in Emacs by integrating with several Python environment management systems such as =Poetry=, =Pipenv=, =virtualenv=, and =pip=.
+
+It provides automatic configuration of Python LSP servers, virtual environment activation, and convenient shell-interaction functions, aiming to offer a seamless workflow for Python projects within Emacs.
+
+
+* Table of Contents                                       :TOC_2_gh:QUOTE:
+#+BEGIN_QUOTE
+- [[#about][About]]
+- [[#requirements][Requirements]]
+- [[#installation][Installation]]
+  - [[#with-use-package-and-straightel][With use-package and straight.el]]
+  - [[#manual-installation][Manual installation]]
+- [[#usage][Usage]]
+#+END_QUOTE
+
+* Requirements
+
+
+| Name                | Version |
+|---------------------+---------|
+| Emacs               |    29.1 |
+| ~project~           |  0.10.0 |
+| ~python~            |    0.28 |
+| ~eglot~             |    1.15 |
+| ~pyvenv~            |    1.21 |
+| ~poetry~ (optional) |   0.2.0 |
+
+
+* Installation
+
+** With use-package and straight.el
+#+begin_src elisp :eval no
+(use-package km-py
+  :demand t
+  :after (python)
+  :straight (km-py
+             :repo "KarimAziev/km-py"
+             :type git
+             :host github)
+  :commands (km-py-setup-enable)
+  :config (km-py-setup-enable))
+#+end_src
+
+** Manual installation
+
+Download the source code and put it wherever you like, e.g. into =~/.emacs.d/km-py/=
+
+#+begin_src shell :eval no
+git clone https://github.com/KarimAziev/km-py.git ~/.emacs.d/km-py/
+#+end_src
+
+Add the downloaded directory to the load path:
+
+#+begin_src elisp :eval no
+(add-to-list 'load-path "~/.emacs.d/km-py/")
+(require 'km-py)
+#+end_src
+
+* Usage
+
+After installing or loading the library into your Emacs setup, you can enable the Python environment setup by calling =km-py-setup-enable=.
+
+To disable the setup and all advised commands, use =km-py-setup-disable=.
