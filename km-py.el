@@ -156,6 +156,36 @@ the advice, use the `km-py--unadvice-shell-commands' function."
            (function-item python-describe-at-point)
            (function :tag "Custom function"))))
 
+(defcustom km-py-commands-to-auto-show-shell-buffer '(python-shell-send-string
+                                                      python-shell-send-statement
+                                                      python-shell-send-region
+                                                      python-shell-send-defun
+                                                      python-shell-send-buffer
+                                                      python-shell-send-file
+                                                      python-describe-at-point)
+  "List of Python shell commands to auto-display buffer.
+
+A list of Python shell commands that trigger the automatic display of the Python
+shell buffer when executed. The default commands are `python-shell-send-string',
+`python-shell-send-statement', `python-shell-send-region',
+`python-shell-send-defun', `python-shell-send-buffer', `python-shell-send-file',
+and `python-describe-at-point'.
+
+Each element in the list should be a function that, when called, is intended to
+interact with the Python shell. Custom functions can also be added to the list
+by selecting the \"Custom function\" option and specifying the function name."
+  :group 'km-py
+  :type '(repeat
+          (choice
+           (function-item python-shell-send-string)
+           (function-item python-shell-send-statement)
+           (function-item python-shell-send-region)
+           (function-item python-shell-send-defun)
+           (function-item python-shell-send-buffer)
+           (function-item python-shell-send-file)
+           (function-item python-describe-at-point)
+           (function :tag "Custom function"))))
+
 (defcustom km-py-venv-names '("env" ".venv" "venv")
   "List of virtual environment directory names to search for.
 
@@ -385,6 +415,49 @@ Add a specified function as a before advice to each command in the list."
   (dolist (cmd km-py-commands-to-advice)
     (advice-remove cmd #'km-py-run-shell)))
 
+(defun km-py--advice-shell-commands-to-pop-buffer ()
+  "Allow auto displaying shell buffer after specific commands."
+  (dolist (cmd km-py-commands-to-auto-show-shell-buffer)
+    (advice-add cmd
+                :after #'km-py--advice-show-shell-buffer)))
+
+(defun km-py--advice-show-shell-buffer (&rest _)
+  "Display Python shell buffer if not already visible."
+  (when-let ((buff (python-shell-get-buffer)))
+    (unless (get-buffer-window buff)
+      (with-selected-window
+          (let ((wind (selected-window)))
+            (or
+             (window-right wind)
+             (window-left wind)
+             (progn (split-window-sensibly) wind)))
+        (pop-to-buffer-same-window buff)))))
+
+(defun km-py--unadvice-shell-commands-to-pop-buffer ()
+  "Remove advice from Python shell commands."
+  (dolist (cmd km-py-commands-to-auto-show-shell-buffer)
+    (advice-remove cmd #'km-py--advice-show-shell-buffer)))
+
+;;;###autoload
+(defun km-py-shell-send-buffer ()
+  "Send buffer to Python shell and show process buffer."
+  (interactive)
+  (unless (python-shell-get-process)
+    (let ((current-prefix-arg '(4)))
+      (call-interactively #'run-python)))
+  (python-shell-send-buffer t)
+  (when-let* ((proc (python-shell-get-process))
+              (buff (and (process-live-p proc)
+                         (process-buffer proc))))
+    (unless (get-buffer-window buff)
+      (with-selected-window
+          (let ((wind (selected-window)))
+            (or
+             (window-right wind)
+             (window-left wind)
+             (progn (split-window-sensibly) wind)))
+        (pop-to-buffer-same-window buff)))))
+
 ;;;###autoload
 (defun km-py-advice-shell-commands ()
   "Allow autostart a Python shell before some functions.
@@ -406,14 +479,16 @@ command."
   "Activate Python environment setup on Python mode hook."
   (interactive)
   (add-hook 'python-base-mode-hook #'km-py-setup)
-  (km-py--advice-shell-commands))
+  (km-py--advice-shell-commands)
+  (km-py--advice-shell-commands-to-pop-buffer))
 
 ;;;###autoload
 (defun km-py-setup-disable ()
   "Disable Python setup and unadvise shell commands."
   (interactive)
   (remove-hook 'python-base-mode-hook #'km-py-setup)
-  (km-py--unadvice-shell-commands))
+  (km-py--unadvice-shell-commands)
+  (km-py--unadvice-shell-commands-to-pop-buffer))
 
 
 
