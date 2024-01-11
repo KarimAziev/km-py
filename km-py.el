@@ -156,8 +156,7 @@ the advice, use the `km-py--unadvice-shell-commands' function."
            (function-item python-describe-at-point)
            (function :tag "Custom function"))))
 
-(defcustom km-py-commands-to-auto-show-shell-buffer '(python-shell-send-string
-                                                      python-shell-send-statement
+(defcustom km-py-commands-to-auto-show-shell-buffer '(python-shell-send-statement
                                                       python-shell-send-region
                                                       python-shell-send-defun
                                                       python-shell-send-buffer
@@ -177,7 +176,6 @@ by selecting the \"Custom function\" option and specifying the function name."
   :group 'km-py
   :type '(repeat
           (choice
-           (function-item python-shell-send-string)
            (function-item python-shell-send-statement)
            (function-item python-shell-send-region)
            (function-item python-shell-send-defun)
