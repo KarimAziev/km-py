@@ -204,8 +204,12 @@ stopping at the root directory or when a matching virtual environment is found."
 
 Argument PROJECT-DIRECTORY is a string specifying the path to the project
 directory."
-  (let ((default-directory (expand-file-name (file-name-as-directory
-                                              project-directory))))
+  (let ((default-directory (if (and project-directory
+                                    (file-exists-p project-directory))
+                               (expand-file-name
+                                (file-name-as-directory
+                                 project-directory))
+                             default-directory)))
     (cond ((file-exists-p "Pipfile") 'pipenv)
           ((file-exists-p "environment.yml") 'conda)
           ((file-exists-p "pyproject.toml")
@@ -351,8 +355,8 @@ virtual environment."
 
 (defun km-py-setup ()
   "Configure Python environment based on project type."
-  (when-let* ((curr-project-root (km-py-project-root))
-              (type (km-py-get-project-type curr-project-root)))
+  (let* ((curr-project-root (km-py-project-root))
+         (type (km-py-get-project-type curr-project-root)))
     (pcase type
       ('poetry (km-py-poetry-setup))
       (_
@@ -383,14 +387,34 @@ virtual environment."
       (venvPath . ,venvPath)
       (venv . ,venv))))
 
+(defun km-py-find-project-root (&optional directory)
+  "Locate the root DIRECTORY with `package.json'.
+
+Optional argument DIRECTORY is the directory from which to start searching for
+the project root. If not provided, `default-directory' is used."
+  (unless directory (setq directory default-directory))
+  (if-let ((found (seq-find
+                   (lambda (it)
+                     (file-exists-p (expand-file-name it directory)))
+                   '("Pipfile" "pyproject.toml" "requirements.txt"
+                     "setup.py"
+                     "setup.cfg"  "environment.yml"))))
+      (file-name-as-directory directory)
+    (let ((parent (expand-file-name ".." directory)))
+      (unless (or (string= parent directory)
+                  (string= directory "")
+                  (string= directory "/"))
+        (km-py-find-project-root parent)))))
 
 (defun km-py-project-root ()
   "Find and return the root directory of the current Python project."
-  (when-let ((project (ignore-errors (project-current))))
-    (if (fboundp 'project-root)
-        (project-root project)
-      (with-no-warnings
-        (car (project-roots project))))))
+  (or
+   (when-let ((project (ignore-errors (project-current))))
+     (if (fboundp 'project-root)
+         (project-root project)
+       (with-no-warnings
+         (car (project-roots project)))))
+   (km-py-find-project-root)))
 
 
 (defun km-py-run-shell (&rest _)
