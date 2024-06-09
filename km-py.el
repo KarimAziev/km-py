@@ -83,6 +83,8 @@
                                               "--stdio"))
                                    (pip . ("pyright-langserver"
                                            "--stdio"))
+                                   (conda . ("conda" "run" "pyright-langserver"
+                                             "--stdio"))
                                    (virtualenv . ("pyright-langserver"
                                                   "--stdio")))
   "List of arguments for Python LSP server based on environment.
