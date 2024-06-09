@@ -186,7 +186,7 @@ by selecting the \"Custom function\" option and specifying the function name."
            (function-item python-describe-at-point)
            (function :tag "Custom function"))))
 
-(defcustom km-py-venv-names '("env" ".venv" "venv")
+(defcustom km-py-venv-names '(".env" "env" ".venv" "venv")
   "List of virtual environment directory names to search for.
 
 A list of directory names that are considered potential Python virtual
@@ -251,7 +251,7 @@ Pyright configuration file. If nil, the file is not overwritten."
 Optional argument FORCE is a boolean indicating whether to overwrite an existing
 Pyright configuration file. If nil, the file is not overwritten."
   (interactive "P")
-  (km-py-poetry-write-pyright-config force))
+  (km-py--poetry-write-pyright-config force))
 
 (defun km-py-eglot-update-or-insert-mode (symb value)
   "Update or add SYMB and VALUE to `eglot-server-programs'.
