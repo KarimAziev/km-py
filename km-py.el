@@ -86,6 +86,8 @@
                                    (conda . ("conda" "run" "pyright-langserver"
                                              "--stdio"))
                                    (virtualenv . ("pyright-langserver"
+                                                  "--stdio"))
+                                   (setuptools . ("pyright-langserver"
                                                   "--stdio")))
   "List of arguments for Python LSP server based on environment.
 
@@ -261,16 +263,29 @@ Argument SYMB is a symbol representing the mode to update or insert in
 
 Argument VALUE is the new value to associate with SYMB in
 `eglot-server-programs'."
-  (if-let ((cell (or (assq symb eglot-server-programs)
-                     (seq-find (lambda (it)
-                                 (let ((name (car it)))
-                                   (if (listp name)
-                                       (memq symb
-                                             name)
-                                     (eq symb name))))
-                               eglot-server-programs))))
-      (setcdr cell value)
-    (add-to-list 'eglot-server-programs (cons symb value))))
+  (let ((cell))
+    (cond ((setq cell (assq symb eglot-server-programs))
+           (setcdr cell value))
+          ((when (listp symb)
+             (setq cell (seq-find (lambda (it)
+                                    (let ((name (car it)))
+                                      (seq-find (lambda (s)
+                                                  (if (listp name)
+                                                      (memq s name)
+                                                    (eq symb name)))
+                                                symb)))
+                                  eglot-server-programs)))
+           (setcar cell symb)
+           (setcdr cell value))
+          ((setq cell (seq-find (lambda (it)
+                                  (let ((name (car it)))
+                                    (if (listp name)
+                                        (memq symb
+                                              name)
+                                      (eq symb name))))
+                                eglot-server-programs))
+           (setcdr cell value))
+          (t (message "km-py: `%s' not in `eglot-server-programs'" symb)))))
 
 (defun km-py-poetry-check-exec (program)
   "Check if PROGRAM exists in Poetry's virtualenv bin directory.
@@ -358,21 +373,24 @@ virtual environment."
 (defun km-py-setup ()
   "Configure Python environment based on project type."
   (let* ((curr-project-root (km-py-project-root))
-         (type (km-py-get-project-type curr-project-root)))
+         (type (km-py-get-project-type curr-project-root))
+         (venv-path (km-py-find-venv-path)))
     (pcase type
-      ('poetry (km-py-poetry-setup))
-      (_
-       (when-let ((venv-path (km-py-find-venv-path)))
-         (pyvenv-activate venv-path)
-         (setq-local python-shell-interpreter
-                     (or (executable-find "python3")
-                         (executable-find "python")))
-         (setq-local python-interpreter python-shell-interpreter))))
+      ((guard (and (not venv-path)
+                   (eq type 'poetry)))
+       (unless venv-path
+         (km-py-poetry-setup)))
+      ((guard venv-path)
+       (pyvenv-activate venv-path)
+       (setq-local python-shell-interpreter
+                   (or (executable-find "python3")
+                       (executable-find "python")))
+       (setq-local python-interpreter python-shell-interpreter)))
     (make-local-variable 'eglot-stay-out-of)
     (add-to-list 'eglot-stay-out-of 'flymake-diagnostic-functions)
     (add-hook 'flymake-diagnostic-functions #'eglot-flymake-backend nil t)
     (when-let ((server-args (cdr (assq type km-py-lsp-server-args))))
-      (km-py-eglot-update-or-insert-mode 'python-mode
+      (km-py-eglot-update-or-insert-mode '(python-mode python-ts-mode)
                                          server-args))
     (eglot-ensure)))
 
