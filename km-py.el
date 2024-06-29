@@ -126,6 +126,24 @@ desired symbol with a new list"
           (repeat
            (string :tag "Server arguments"))))
 
+(defcustom km-py-project-markers-files '("Pipfile"
+                                         "pyproject.toml"
+                                         "requirements.txt"
+                                         "setup.py"
+                                         "setup.cfg"
+                                         "environment.yml")
+  "List of filenames used to identify Python project directories.
+
+A list of filenames used to identify Python projects.
+
+The default filenames are \"Pipfile\", \"pyproject.toml\",
+\"requirements.txt\", \"setup.py\", \"setup.cfg\", and \"environment.yml\".
+
+Each element in the list should be a string representing a filename
+that is commonly found in the root directory of a Python project."
+  :group 'km-py
+  :type '(repeat string))
+
 (defcustom km-py-commands-to-advice '(python-shell-send-string
                                       python-shell-send-statement
                                       python-shell-send-region
@@ -219,13 +237,66 @@ directory."
           ((file-exists-p "pyproject.toml")
            (with-temp-buffer
              (insert-file-contents "pyproject.toml")
-             (if (re-search-forward "\\[tool\\.poetry\\]" nil t) 'poetry
-               'setuptools)))
+             (if (re-search-forward "\\[tool\\.poetry\\]" nil t)
+                 'poetry
+               'virtualenv)))
           ((or (file-exists-p "setup.py")
                (file-exists-p "setup.cfg"))
            'setuptools)
           ((file-exists-p "requirements.txt") 'pip)
           (t 'virtualenv))))
+
+(defun km-py-pipenv-setup ()
+  "Configure Python environment with Pipenv in Emacs."
+  (require 'flymake)
+  (when-let ((proj (km-py-project-root)))
+    (let ((venv-path (string-trim (shell-command-to-string "pipenv --venv"))))
+      (when (and venv-path (file-directory-p venv-path))
+        (pyvenv-activate venv-path)
+        (setq-local python-shell-interpreter (concat venv-path "/bin/python")
+                    python-shell-interpreter-args "-i"
+                    python-interpreter (concat venv-path "/bin/python"))
+        (when (executable-find "ruff")
+          (setq-local python-flymake-command
+                      (list "env" "-u"
+                            "VIRTUAL_ENV"
+                            "pipenv"
+                            "run"
+                            "ruff"
+                            "--config"
+                            (expand-file-name "pyproject.toml" proj)
+                            "--quiet" "--stdin-filename=stdin" "-"))
+          (when (bound-and-true-p flymake-mode)
+            (flymake-mode -1))
+          (add-hook 'flymake-diagnostic-functions #'python-flymake nil t)
+          (flymake-mode 1))))))
+
+(defun km-py-poetry-setup ()
+  "Configure Python environment with Poetry in Emacs."
+  (require 'flymake)
+  (when-let ((proj (poetry-find-project-root)))
+    (unless (bound-and-true-p poetry-tracking-mode)
+      (poetry-tracking-mode 1))
+    (poetry-track-virtualenv)
+    (when-let ((venv (poetry-get-virtualenv))
+               (poetry-python-path (km-py-poetry-which-python)))
+      (setq-local python-shell-interpreter poetry-python-path
+                  python-shell-interpreter-args "-i"
+                  python-interpreter poetry-python-path)
+      (when (km-py-poetry-check-exec "ruff")
+        (setq-local python-flymake-command
+                    (list "env" "-u"
+                          "VIRTUAL_ENV"
+                          (executable-find "poetry")
+                          "run"
+                          "ruff"
+                          "--config"
+                          (expand-file-name "pyproject.toml" proj)
+                          "--quiet" "--stdin-filename=stdin" "-"))
+        (when (bound-and-true-p flymake-mode)
+          (flymake-mode -1))
+        (add-hook 'flymake-diagnostic-functions #'python-flymake nil t)
+        (flymake-mode 1)))))
 
 (defun km-py--poetry-write-pyright-config (&optional force)
   "Create or update Pyright config from Poetry environment.
@@ -313,32 +384,6 @@ virtual environment."
                   "python"))
       (string-trim (buffer-string)))))
 
-(defun km-py-poetry-setup ()
-  "Configure Python environment with Poetry in Emacs."
-  (require 'flymake)
-  (when-let ((proj (poetry-find-project-root)))
-    (unless (bound-and-true-p poetry-tracking-mode)
-      (poetry-tracking-mode 1))
-    (poetry-track-virtualenv)
-    (when-let ((venv (poetry-get-virtualenv))
-               (poetry-python-path (km-py-poetry-which-python)))
-      (setq-local python-shell-interpreter poetry-python-path
-                  python-shell-interpreter-args "-i"
-                  python-interpreter poetry-python-path)
-      (when (km-py-poetry-check-exec "ruff")
-        (setq-local python-flymake-command
-                    (list "env" "-u"
-                          "VIRTUAL_ENV"
-                          (executable-find "poetry")
-                          "run"
-                          "ruff"
-                          "--config"
-                          (expand-file-name "pyproject.toml" proj)
-                          "--quiet" "--stdin-filename=stdin" "-"))
-        (when (bound-and-true-p flymake-mode)
-          (flymake-mode -1))
-        (add-hook 'flymake-diagnostic-functions #'python-flymake nil t)
-        (flymake-mode 1)))))
 
 (defun km-py-find-venv-path ()
   "Find the nearest virtual environment directory from the current path."
@@ -376,16 +421,14 @@ virtual environment."
          (type (km-py-get-project-type curr-project-root))
          (venv-path (km-py-find-venv-path)))
     (pcase type
-      ((guard (and (not venv-path)
-                   (eq type 'poetry)))
-       (unless venv-path
-         (km-py-poetry-setup)))
       ((guard venv-path)
        (pyvenv-activate venv-path)
        (setq-local python-shell-interpreter
                    (or (executable-find "python3")
                        (executable-find "python")))
-       (setq-local python-interpreter python-shell-interpreter)))
+       (setq-local python-interpreter python-shell-interpreter))
+      ('poetry
+       (km-py-poetry-setup)))
     (make-local-variable 'eglot-stay-out-of)
     (add-to-list 'eglot-stay-out-of 'flymake-diagnostic-functions)
     (add-hook 'flymake-diagnostic-functions #'eglot-flymake-backend nil t)
@@ -416,9 +459,7 @@ the project root. If not provided, `default-directory' is used."
   (if-let ((found (seq-find
                    (lambda (it)
                      (file-exists-p (expand-file-name it directory)))
-                   '("Pipfile" "pyproject.toml" "requirements.txt"
-                     "setup.py"
-                     "setup.cfg"  "environment.yml"))))
+                   km-py-project-markers-files)))
       (file-name-as-directory directory)
     (let ((parent (expand-file-name ".." directory)))
       (unless (or (string= parent directory)
@@ -426,14 +467,23 @@ the project root. If not provided, `default-directory' is used."
                   (string= directory "/"))
         (km-py-find-project-root parent)))))
 
+(defun km-py--project-root ()
+  "Return the root directory of the current project."
+  (when-let ((project (ignore-errors (project-current))))
+    (if (fboundp 'project-root)
+        (project-root project)
+      (with-no-warnings
+        (car (project-roots project))))))
+
+(defun km-py--find-python-project-markers ()
+  "Return a list of Python project markers found in the current directory."
+  (let ((fn (apply-partially #'locate-dominating-file default-directory)))
+    (delete-dups (delq nil (mapcar fn km-py-project-markers-files)))))
+
 (defun km-py-project-root ()
   "Find and return the root directory of the current Python project."
   (or
-   (when-let ((project (ignore-errors (project-current))))
-     (if (fboundp 'project-root)
-         (project-root project)
-       (with-no-warnings
-         (car (project-roots project)))))
+   (km-py--project-root)
    (km-py-find-project-root)))
 
 
