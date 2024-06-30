@@ -275,8 +275,6 @@ directory."
   "Configure Python environment with Poetry in Emacs."
   (require 'flymake)
   (when-let ((proj (poetry-find-project-root)))
-    (unless (bound-and-true-p poetry-tracking-mode)
-      (poetry-tracking-mode 1))
     (poetry-track-virtualenv)
     (when-let ((venv (poetry-get-virtualenv))
                (poetry-python-path (km-py-poetry-which-python)))
