@@ -220,7 +220,6 @@ stopping at the root directory or when a matching virtual environment is found."
   :type '(repeat
           (string :tag "Venv directory name")))
 
-
 (defun km-py-get-project-type (project-directory)
   "Determine Python project type based on files in PROJECT-DIRECTORY.
 
@@ -383,6 +382,7 @@ virtual environment."
       (string-trim (buffer-string)))))
 
 
+
 (defun km-py-find-venv-path ()
   "Find the nearest virtual environment directory from the current path."
   (let ((found)
@@ -538,8 +538,13 @@ Add a specified function as a before advice to each command in the list."
   "Send buffer to Python shell and show process buffer."
   (interactive)
   (unless (python-shell-get-process)
-    (let ((current-prefix-arg '(4)))
-      (call-interactively #'run-python)))
+    (let ((buff (current-buffer)))
+      (let ((current-prefix-arg '(4)))
+        (when-let ((proc (call-interactively #'run-python)))
+          (run-with-timer 0.5 nil (lambda ()
+                                    (when (buffer-live-p buff)
+                                      (with-current-buffer buff
+                                        (python-shell-send-buffer t)))))))))
   (python-shell-send-buffer t))
 
 ;;;###autoload
