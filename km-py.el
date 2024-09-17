@@ -579,6 +579,118 @@ command."
   (km-py--unadvice-shell-commands)
   (km-py--unadvice-shell-commands-to-pop-buffer))
 
+;;;###autoload
+(defun km-py-eglot-reconnect ()
+  "Reconnect to the Eglot server and reopen the buffer at the same position."
+  (interactive)
+  (let ((file buffer-file-name)
+        (buffer (current-buffer))
+        (pos (point))
+        (server (condition-case nil
+                    (eglot--current-server-or-lose)
+                  (error nil))))
+    (when server
+      (ignore-errors (eglot-reconnect server t)))
+    (when (and file
+               (or (not (buffer-modified-p buffer))
+                   (and (yes-or-no-p "Save buffer?")
+                        (progn (save-buffer) t))))
+      (kill-buffer buffer)
+      (find-file file)
+      (goto-char pos))
+    (when server
+      (eglot-ensure))))
+
+(defun km-py--trim-indent (str)
+  "Remove leading indentation from the given string STR.
+
+Argument STR is the string from which to trim leading indentation."
+  (or (with-temp-buffer
+        (insert str)
+        (goto-char (point-min))
+        (when (re-search-forward "[^\s\t\n\r\f]" nil t 1)
+          (forward-char -1)
+          (let* ((spaces (buffer-substring-no-properties
+                          (line-beginning-position)
+                          (point)))
+                 (re
+                  (unless (string-empty-p spaces)
+                    (concat "^" spaces)))
+                 (len (length spaces)))
+            (when re
+              (goto-char (point-min))
+              (while (progn
+                       (when (looking-at re)
+                         (delete-region (point)
+                                        (+ (point)
+                                           len)))
+                       (zerop (forward-line 1))))
+              (while (re-search-forward re nil t 1)
+                (replace-match ""))
+              (buffer-string)))))
+      str))
+
+;;;###autoload
+(defun km-py-yank (&optional arg)
+  "Paste the current kill ring entry with adjusted indentation based on prefix.
+
+The prefix argument ARG determines the behavior of the yank operation. See
+`yank' command.
+
+This command facilitates the insertion of previously killed (cut/copied) text
+into a buffer, ensuring that the inserted text is correctly indented to match
+the current point's indentation level.
+
+The inserted text will have its leading indentation adjusted to match the
+current line's indentation.
+
+If the text to be inserted was indented, all lines will be reindented to match
+the current line's leading spaces and tabs.
+
+This command ensures that pasted content maintains logical structure by aligning
+it with the surrounding code or text indentation.
+
+
+For example, consider you have the following text in your kill ring:
+
+def example_function():
+    print(\"Hello, World!\")
+
+
+If you run this command in a buffer at a position with an indentation level of 4
+spaces, the inserted text will be adjusted to:
+
+    def example_function():
+        print(\"Hello, World!\")."
+  (interactive "*P")
+  (setq yank-window-start (window-start))
+  (setq this-command t)
+  (let ((prefix (buffer-substring-no-properties (line-beginning-position)
+                                                (point))))
+    (goto-char (line-beginning-position))
+    (push-mark)
+    (let* ((curr (current-kill
+                  (cond ((listp arg) 0)
+                        ((eq arg '-) -2)
+                        (t (1- arg)))))
+           (trimmed (km-py--trim-indent curr)))
+      (unless (string-empty-p prefix)
+        (setq trimmed (mapconcat
+                       (lambda (line-str) (if (string-empty-p line-str)
+                                              line-str
+                                            (concat prefix line-str)))
+                       (split-string trimmed "[\n\r\f]")
+                       "\n")))
+      (insert-for-yank trimmed)
+      (if (consp arg)
+          (goto-char (prog1 (mark t)
+                       (set-marker (mark-marker)
+                                   (point)
+                                   (current-buffer)))))
+      (if (eq this-command t)
+          (setq this-command 'yank))
+      nil)))
+
 
 
 (provide 'km-py)
