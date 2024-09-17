@@ -37,6 +37,16 @@ It provides automatic configuration of Python LSP servers, virtual environment a
 (use-package km-py
   :demand t
   :after (python)
+  :bind ((:map python-mode-map
+          :package python
+          ("C-<return>" . km-py-shell-send-buffer)
+          ("C-c C-c" . km-py-shell-send-buffer)
+          ("C-c C-y" . km-py-yank))
+         (:map python-ts-mode-map
+          :package python
+          ("C-<return>" . km-py-shell-send-buffer)
+          ("C-c C-c" . km-py-shell-send-buffer)
+          ("C-c C-y" . km-py-yank)))
   :straight (km-py
              :repo "KarimAziev/km-py"
              :type git
