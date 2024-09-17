@@ -15,6 +15,7 @@ It provides automatic configuration of Python LSP servers, virtual environment a
   - [[#with-use-package-and-straightel][With use-package and straight.el]]
   - [[#manual-installation][Manual installation]]
 - [[#usage][Usage]]
+  - [[#other-commands][Other commands:]]
 #+END_QUOTE
 
 * Requirements
@@ -75,3 +76,13 @@ Add the downloaded directory to the load path:
 After installing or loading the library into your Emacs setup, you can enable the Python environment setup by calling =km-py-setup-enable=.
 
 To disable the setup and all advised commands, use =km-py-setup-disable=.
+
+** Other commands:
+
+=M-x km-py-yank=:
+Paste the current kill ring entry with adjusted indentation. The inserted text will have its leading indentation adjusted to match the current line's indentation. If the text to be inserted was indented, all lines will be reindented to match the current line's leading spaces and tabs.
+
+[[./km-py-yank.gif]]
+
+=M-x km-py-shell-send-buffer=
+This command is similar to =python-shell-send-buffer=, but it automatically runs an inferior Python process if it is not started.
