@@ -6,7 +6,7 @@
 ;; URL: https://github.com/KarimAziev/km-py
 ;; Version: 0.1.0
 ;; Keywords: languages
-;; Package-Requires: ((emacs "29.1") (project "0.10.0") (python "0.28") (eglot "1.15") (pyvenv "1.21"))
+;; Package-Requires: ((emacs "29.1") (project "0.11.1") (python "0.28") (eglot "1.17") (pyvenv "1.21"))
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;; This file is NOT part of GNU Emacs.
@@ -69,7 +69,6 @@
 
 (declare-function poetry-track-virtualenv "poetry")
 (declare-function poetry-get-virtualenv "poetry")
-(declare-function poetry-tracking-mode "poetry")
 (declare-function poetry-find-project-root "poetry")
 
 
