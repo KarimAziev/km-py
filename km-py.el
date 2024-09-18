@@ -666,6 +666,10 @@ spaces, the inserted text will be adjusted to:
   (setq this-command t)
   (let ((prefix (buffer-substring-no-properties (line-beginning-position)
                                                 (point))))
+    (when (and (region-active-p)
+               (use-region-p))
+      (delete-region (region-beginning)
+                     (region-end)))
     (goto-char (line-beginning-position))
     (push-mark)
     (let* ((curr (current-kill
