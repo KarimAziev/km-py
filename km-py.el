@@ -600,7 +600,43 @@ command."
     (when server
       (eglot-ensure))))
 
-(defun km-py--trim-indent (str)
+(defcustom km-py--indent-first-line-keywords '("class" "def" "if" "else" "elif"
+                                               "for" "while" "try" "except"
+                                               "finally" "async" "match" "case"
+                                               "with")
+  "List of Python keywords that initiate an indented code block.
+
+This variable holds a list of Python keywords that, when appearing at the
+beginning of a line, indicate that the subsequent lines should be indented
+relative to that line. These keywords are associated with code structures
+that introduce a new block in Python syntax expect the following lines to be
+indented by 4 spaces.
+
+This list is utilized by indentation functions to determine if the first line
+of pasted or inserted code should be indented automatically, ensuring
+consistent code formatting according to Python's indentation rules.
+
+When pasting code that begins with one of these keywords, the indentation
+functions can automatically adjust the first line's indentation to match the
+expected indentation level.
+
+If you customize this variable to include additional keywords, the indentation
+functions will recognize those as initiation points for indented blocks as well."
+  :group 'km-py
+  :type '(repeat string))
+
+(defcustom km-py-yank-auto-indent-first-line t
+  "Whether to allow indenting the first line of current kill.
+
+When set to t, the first line of the yanked text will be automatically
+indented according to the indentation level of subsequent lines in the command
+`km-py-yank'.
+
+If set to nil, the first line will retain its original indentation."
+  :group 'km-py
+  :type 'boolean)
+
+(defun km-py--dedent-text (str)
   "Remove leading indentation from the given string STR.
 
 Argument STR is the string from which to trim leading indentation."
@@ -624,10 +660,36 @@ Argument STR is the string from which to trim leading indentation."
                                         (+ (point)
                                            len)))
                        (zerop (forward-line 1))))
-              (while (re-search-forward re nil t 1)
-                (replace-match ""))
               (buffer-string)))))
       str))
+
+(defun km-py--ensure-first-line-indent (str)
+  "Ensure the first line of STR is indented based on subsequent lines.
+
+STR is the string whose first line's indentation will be adjusted to align with
+the indentation level expected by its subsequent lines, enhancing code
+consistency.
+
+Argument STR is the string to ensure the first line is properly indented."
+  (if (string-prefix-p " " str)
+      str
+    (let* ((lines (split-string str "\n" t))
+           (first-line (pop lines)))
+      (let ((next-str (car lines))
+            (next-indent (if (string-match-p
+                              (concat "^" (regexp-opt
+                                           km-py--indent-first-line-keywords
+                                           'symbols))
+                              first-line)
+                             -4
+                           0)))
+        (while (and next-str (string-match-p "^\s" next-str 0))
+          (setq next-indent (1+ next-indent))
+          (setq next-str (substring-no-properties next-str 1)))
+        (if (> next-indent 0)
+            (setq str (concat (make-string next-indent ?\s) str))
+          str)))))
+
 
 ;;;###autoload
 (defun km-py-yank (&optional arg)
@@ -650,50 +712,49 @@ This command ensures that pasted content maintains logical structure by aligning
 it with the surrounding code or text indentation.
 
 
-For example, consider you have the following text in your kill ring:
+For example, suppose the kill ring contains:
 
 def example_function():
     print(\"Hello, World!\")
 
-
-If you run this command in a buffer at a position with an indentation level of 4
-spaces, the inserted text will be adjusted to:
+Running the command at a point with 4 spaces of indentation will insert:
 
     def example_function():
         print(\"Hello, World!\")."
   (interactive "*P")
-  (setq yank-window-start (window-start))
-  (setq this-command t)
+  (when (and (region-active-p)
+             (use-region-p))
+    (delete-region (region-beginning)
+                   (region-end)))
   (let ((prefix (buffer-substring-no-properties (line-beginning-position)
                                                 (point))))
-    (when (and (region-active-p)
-               (use-region-p))
-      (delete-region (region-beginning)
-                     (region-end)))
     (goto-char (line-beginning-position))
-    (push-mark)
+    (when (and
+           (looking-at "\s")
+           (string-empty-p
+            (string-trim
+             (buffer-substring-no-properties (point)
+                                             (line-end-position)))))
+      (delete-region (point)
+                     (line-end-position)))
     (let* ((curr (current-kill
                   (cond ((listp arg) 0)
                         ((eq arg '-) -2)
                         (t (1- arg)))))
-           (trimmed (km-py--trim-indent curr)))
-      (unless (string-empty-p prefix)
-        (setq trimmed (mapconcat
-                       (lambda (line-str) (if (string-empty-p line-str)
-                                              line-str
-                                            (concat prefix line-str)))
-                       (split-string trimmed "[\n\r\f]")
-                       "\n")))
-      (insert-for-yank trimmed)
-      (if (consp arg)
-          (goto-char (prog1 (mark t)
-                       (set-marker (mark-marker)
-                                   (point)
-                                   (current-buffer)))))
-      (if (eq this-command t)
-          (setq this-command 'yank))
-      nil)))
-
+           (trimmed (km-py--dedent-text (if
+                                            km-py-yank-auto-indent-first-line
+                                            (km-py--ensure-first-line-indent
+                                             curr)
+                                          curr))))
+      (setq trimmed (mapconcat
+                     (lambda (line-str) (if (string-empty-p line-str)
+                                            line-str
+                                          (concat prefix
+                                                  (string-trim-right
+                                                   line-str))))
+                     (split-string trimmed "[\n\r\f]")
+                     "\n"))
+      (insert trimmed))))
 
 
 (provide 'km-py)
