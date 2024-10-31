@@ -532,19 +532,88 @@ Add a specified function as a before advice to each command in the list."
   (dolist (cmd km-py-commands-to-auto-show-shell-buffer)
     (advice-remove cmd #'km-py--advice-show-shell-buffer)))
 
+
+(defun km-py-setup-python-path ()
+  "Add the project's root directory to `python-shell-extra-pythonpaths'."
+  (when-let ((proj (km-py-project-root)))
+    (setq proj (expand-file-name proj))
+    (unless (member proj python-shell-extra-pythonpaths)
+      (setq-local python-shell-extra-pythonpaths
+                  (append python-shell-extra-pythonpaths
+                          (list proj))))))
+
+(defun km-py--run-in-buffer (buffer timer-sym fn &rest args)
+  "Run a function FN in a BUFFER and cancel timer TIMER-SYM.
+
+Argument TIMER-SYM is a symbol that represents a timer.
+Argument BUFFER is the buffer in which the function/macro will be executed.
+Argument FN is the function or macro that will be executed.
+Argument ARGS is a list of additional arguments that will be passed to the FN."
+  (when (and buffer (buffer-live-p buffer))
+    (with-current-buffer buffer
+      (km-py--cancel-timer timer-sym)
+      (let ((wnd (get-buffer-window buffer)))
+        (if wnd
+            (with-selected-window wnd
+              (apply fn args))
+          (apply fn args))))))
+
+(defun km-py--cancel-timer (timer-sym)
+  "Cancel a timer if it exists and set the value of TIMER-SYM to nil.
+
+Argument TIMER-SYM is a symbol that represents the timer to be canceled."
+  (when-let ((timer-value (symbol-value timer-sym)))
+    (when (timerp timer-value)
+      (cancel-timer timer-value)
+      (set timer-sym nil))))
+
+(defun km-py--debounce (timer-sym delay fn &rest args)
+  "Debounce execution FN with ARGS for DELAY.
+TIMER-SYM is a symbol to use as a timer."
+  (km-py--cancel-timer timer-sym)
+  (set timer-sym (apply #'run-with-timer delay nil
+                        #'km-py--run-in-buffer
+                        (current-buffer)
+                        timer-sym
+                        fn
+                        args)))
+
+(defvar-local km-py--shell-timer nil)
+
+(defvar km-py-send-file-code "
+try:
+    __file__
+except Exception:
+    __file__ = %s
+"
+  "String template for handling `__file__' variable in Python code.")
+
+(defun km-py--send-buffer (proc)
+  "Send the current buffer's content to a live Python process PROC.
+
+Argument PROC is a process object representing the Python subprocess."
+  (when (process-live-p proc)
+    (let ((setup-code
+           (when buffer-file-name
+             (format km-py-send-file-code (prin1-to-string buffer-file-name)))))
+      (when setup-code
+        (python-shell-send-string-no-output setup-code proc))
+      (python-shell-send-buffer t))))
+
 ;;;###autoload
 (defun km-py-shell-send-buffer ()
   "Send buffer to Python shell and show process buffer."
   (interactive)
-  (unless (python-shell-get-process)
-    (let ((buff (current-buffer)))
+  (km-py-setup-python-path)
+  (let ((proc (python-shell-get-process)))
+    (if (and proc (process-live-p proc))
+        (km-py--send-buffer proc)
       (let ((current-prefix-arg '(4)))
-        (when-let ((proc (call-interactively #'run-python)))
-          (run-with-timer 0.5 nil (lambda ()
-                                    (when (buffer-live-p buff)
-                                      (with-current-buffer buff
-                                        (python-shell-send-buffer t)))))))))
-  (python-shell-send-buffer t))
+        (when-let ((new-proc (call-interactively #'run-python)))
+          (km-py--debounce 'km-py--shell-timer
+                           1
+                           #'km-py--send-buffer
+                           new-proc))))))
 
 ;;;###autoload
 (defun km-py-advice-shell-commands ()
@@ -676,13 +745,16 @@ Argument STR is the string to ensure the first line is properly indented."
     (let* ((lines (split-string str "\n" t))
            (first-line (pop lines)))
       (let ((next-str (car lines))
-            (next-indent (if (string-match-p
-                              (concat "^" (regexp-opt
-                                           km-py--indent-first-line-keywords
-                                           'symbols))
-                              first-line)
-                             -4
-                           0)))
+            (next-indent
+             (cond ((string-match-p
+                     (concat "^" (regexp-opt
+                                  km-py--indent-first-line-keywords
+                                  'symbols))
+                     first-line)
+                    -4)
+                   ((string-match-p "([\s]*$" first-line)
+                    -4)
+                   (t 0))))
         (while (and next-str (string-match-p "^\s" next-str 0))
           (setq next-indent (1+ next-indent))
           (setq next-str (substring-no-properties next-str 1)))
