@@ -754,6 +754,10 @@ Argument STR is the string to ensure the first line is properly indented."
                     -4)
                    ((string-match-p "([\s]*$" first-line)
                     -4)
+                   ((and (string-match-p "[[][\s]*$" first-line)
+                         (when-let* ((last-line (car (last lines))))
+                           (string-match-p "\\]\\([\s]*\\)$" last-line)))
+                    -4)
                    (t 0))))
         (while (and next-str (string-match-p "^\s" next-str 0))
           (setq next-indent (1+ next-indent))
@@ -801,14 +805,8 @@ Running the command at a point with 4 spaces of indentation will insert:
   (let ((prefix (buffer-substring-no-properties (line-beginning-position)
                                                 (point))))
     (goto-char (line-beginning-position))
-    (when (and
-           (looking-at "\s")
-           (string-empty-p
-            (string-trim
-             (buffer-substring-no-properties (point)
-                                             (line-end-position)))))
-      (delete-region (point)
-                     (line-end-position)))
+    (delete-region (point)
+                   (line-end-position))
     (let* ((curr (current-kill
                   (cond ((listp arg) 0)
                         ((eq arg '-) -2)
@@ -817,16 +815,17 @@ Running the command at a point with 4 spaces of indentation will insert:
                                             km-py-yank-auto-indent-first-line
                                             (km-py--ensure-first-line-indent
                                              curr)
-                                          curr))))
-      (setq trimmed (mapconcat
-                     (lambda (line-str) (if (string-empty-p line-str)
-                                            line-str
-                                          (concat prefix
-                                                  (string-trim-right
-                                                   line-str))))
-                     (split-string trimmed "[\n\r\f]")
-                     "\n"))
-      (insert trimmed))))
+                                          curr)))
+           (empty-prefix (make-string (length prefix) ?\s)))
+      (setq trimmed (seq-map-indexed
+                     (lambda (line-str i)
+                       (if (string-empty-p line-str)
+                           line-str
+                         (concat (if (> i 0) empty-prefix prefix)
+                                 (string-trim-right
+                                  line-str))))
+                     (split-string trimmed "[\n\r\f]")))
+      (insert (string-join trimmed "\n")))))
 
 
 (provide 'km-py)
