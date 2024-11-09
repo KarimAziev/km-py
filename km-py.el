@@ -247,7 +247,7 @@ directory."
 (defun km-py-pipenv-setup ()
   "Configure Python environment with Pipenv in Emacs."
   (require 'flymake)
-  (when-let ((proj (km-py-project-root)))
+  (when-let* ((proj (km-py-project-root)))
     (let ((venv-path (string-trim (shell-command-to-string "pipenv --venv"))))
       (when (and venv-path (file-directory-p venv-path))
         (pyvenv-activate venv-path)
@@ -272,9 +272,9 @@ directory."
 (defun km-py-poetry-setup ()
   "Configure Python environment with Poetry in Emacs."
   (require 'flymake)
-  (when-let ((proj (poetry-find-project-root)))
+  (when-let* ((proj (poetry-find-project-root)))
     (poetry-track-virtualenv)
-    (when-let ((venv (poetry-get-virtualenv))
+    (when-let* ((venv (poetry-get-virtualenv))
                (poetry-python-path (km-py-poetry-which-python)))
       (setq-local python-shell-interpreter poetry-python-path
                   python-shell-interpreter-args "-i"
@@ -359,7 +359,7 @@ Argument VALUE is the new value to associate with SYMB in
 
 Argument PROGRAM is the name of the executable to check within the Poetry
 virtual environment."
-  (when-let ((venv (poetry-get-virtualenv)))
+  (when-let* ((venv (poetry-get-virtualenv)))
     (let ((file (concat venv "/bin/" program)))
       (when (file-exists-p file)
         file))))
@@ -389,7 +389,7 @@ virtual environment."
     (while (and
             (not found)
             (not (string= "/" directory)))
-      (setq found (when-let ((name (seq-find
+      (setq found (when-let* ((name (seq-find
                                     (lambda (venv-name)
                                       (let ((venv-path
                                              (expand-file-name
@@ -429,7 +429,7 @@ virtual environment."
     (make-local-variable 'eglot-stay-out-of)
     (add-to-list 'eglot-stay-out-of 'flymake-diagnostic-functions)
     (add-hook 'flymake-diagnostic-functions #'eglot-flymake-backend nil t)
-    (when-let ((server-args (cdr (assq type km-py-lsp-server-args))))
+    (when-let* ((server-args (cdr (assq type km-py-lsp-server-args))))
       (km-py-eglot-update-or-insert-mode '(python-mode python-ts-mode)
                                          server-args))
     (eglot-ensure)))
@@ -453,7 +453,7 @@ virtual environment."
 Optional argument DIRECTORY is the directory from which to start searching for
 the project root. If not provided, `default-directory' is used."
   (unless directory (setq directory default-directory))
-  (if-let ((found (seq-find
+  (if-let* ((found (seq-find
                    (lambda (it)
                      (file-exists-p (expand-file-name it directory)))
                    km-py-project-markers-files)))
@@ -466,7 +466,7 @@ the project root. If not provided, `default-directory' is used."
 
 (defun km-py--project-root ()
   "Return the root directory of the current project."
-  (when-let ((project (ignore-errors (project-current))))
+  (when-let* ((project (ignore-errors (project-current))))
     (if (fboundp 'project-root)
         (project-root project)
       (with-no-warnings
@@ -535,7 +535,7 @@ Add a specified function as a before advice to each command in the list."
 
 (defun km-py-setup-python-path ()
   "Add the project's root directory to `python-shell-extra-pythonpaths'."
-  (when-let ((proj (km-py-project-root)))
+  (when-let* ((proj (km-py-project-root)))
     (setq proj (expand-file-name proj))
     (unless (member proj python-shell-extra-pythonpaths)
       (setq-local python-shell-extra-pythonpaths
@@ -562,7 +562,7 @@ Argument ARGS is a list of additional arguments that will be passed to the FN."
   "Cancel a timer if it exists and set the value of TIMER-SYM to nil.
 
 Argument TIMER-SYM is a symbol that represents the timer to be canceled."
-  (when-let ((timer-value (symbol-value timer-sym)))
+  (when-let* ((timer-value (symbol-value timer-sym)))
     (when (timerp timer-value)
       (cancel-timer timer-value)
       (set timer-sym nil))))
@@ -609,7 +609,7 @@ Argument PROC is a process object representing the Python subprocess."
     (if (and proc (process-live-p proc))
         (km-py--send-buffer proc)
       (let ((current-prefix-arg '(4)))
-        (when-let ((new-proc (call-interactively #'run-python)))
+        (when-let* ((new-proc (call-interactively #'run-python)))
           (km-py--debounce 'km-py--shell-timer
                            1
                            #'km-py--send-buffer
@@ -826,6 +826,7 @@ Running the command at a point with 4 spaces of indentation will insert:
                                   line-str))))
                      (split-string trimmed "[\n\r\f]")))
       (insert (string-join trimmed "\n")))))
+
 
 
 (provide 'km-py)
