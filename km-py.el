@@ -600,20 +600,56 @@ Argument PROC is a process object representing the Python subprocess."
         (python-shell-send-string-no-output setup-code proc))
       (python-shell-send-buffer t))))
 
+
+(defun km-py--run-python-send-buffer (&optional proc-wnd)
+  "Run a Python process and send the current buffer's content to it.
+
+Optional argument PROC-WND is a window object that, if live, will be
+used to display the Python process buffer."
+  (when-let* ((wnd (selected-window))
+              (new-proc (with-selected-window wnd
+                          (run-python (python-shell-calculate-command)
+                                      python-shell-dedicated
+                                      (not proc-wnd))))
+              (buff (process-buffer new-proc)))
+    (when (window-live-p proc-wnd)
+      (with-selected-window proc-wnd
+        (pop-to-buffer-same-window buff)))
+    (km-py--debounce 'km-py--shell-timer
+                     1
+                     #'km-py--send-buffer
+                     new-proc)))
+
 ;;;###autoload
-(defun km-py-shell-send-buffer ()
-  "Send buffer to Python shell and show process buffer."
-  (interactive)
+(defun km-py-shell-send-buffer (&optional restart)
+  "Send the current buffer's content to a Python process, optionally restarting.
+
+Optional argument RESTART is a prefix argument that, when non-nil,
+indicates that the Python process should be restarted before sending
+the buffer."
+  (interactive "P")
   (km-py-setup-python-path)
-  (let ((proc (python-shell-get-process)))
-    (if (and proc (process-live-p proc))
-        (km-py--send-buffer proc)
-      (let ((current-prefix-arg '(4)))
-        (when-let* ((new-proc (call-interactively #'run-python)))
-          (km-py--debounce 'km-py--shell-timer
-                           1
-                           #'km-py--send-buffer
-                           new-proc))))))
+  (let* ((proc (python-shell-get-process))
+         (proc-buff
+          (when (process-live-p proc)
+            (process-buffer proc))))
+    (cond ((and proc-buff restart)
+           (let ((proc-wnd
+                  (get-buffer-window proc-buff)))
+             (kill-buffer proc-buff)
+             (km-py--run-python-send-buffer proc-wnd)))
+          (proc (km-py--send-buffer proc))
+          (t (km-py--run-python-send-buffer)))))
+
+;;;###autoload
+(defun km-py-shell-send-buffer-new (&optional no-restart)
+  "Execute the current buffer's content by default in a new Python process.
+
+Optional argument NO-RESTART is a prefix argument that, when non-nil,
+indicates that the Python process should not be restarted before sending
+the buffer."
+  (interactive "P")
+  (km-py-shell-send-buffer (not no-restart)))
 
 ;;;###autoload
 (defun km-py-advice-shell-commands ()
