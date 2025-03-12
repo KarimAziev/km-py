@@ -705,10 +705,10 @@ command."
     (when server
       (eglot-ensure))))
 
-(defcustom km-py--indent-first-line-keywords '("class" "def" "if" "else" "elif"
-                                               "for" "while" "try" "except"
-                                               "finally" "async" "match" "case"
-                                               "with")
+(defcustom km-py-indent-first-line-keywords '("class" "def" "if" "else" "elif"
+                                              "for" "while" "try" "except"
+                                              "finally" "async" "match" "case"
+                                              "with")
   "List of Python keywords that initiate an indented code block.
 
 This variable holds a list of Python keywords that, when appearing at the
@@ -779,16 +779,26 @@ Argument STR is the string to ensure the first line is properly indented."
   (if (string-prefix-p " " str)
       str
     (let* ((lines (split-string str "\n" t))
-           (first-line (pop lines)))
+           (first-line (pop lines))
+           (last-line (car (last lines))))
       (let ((next-str (car lines))
             (next-indent
              (cond ((string-match-p
                      (concat "^" (regexp-opt
-                                  km-py--indent-first-line-keywords
+                                  km-py-indent-first-line-keywords
                                   'symbols))
                      first-line)
                     -4)
                    ((string-match-p "([\s]*$" first-line)
+                    -4)
+                   ((and last-line
+                         (or
+                          (and (string-match-p "{" first-line)
+                               (not (string-match-p "}" first-line))
+                               (string-match-p "}$"
+                                               (string-trim-right last-line)))
+                          (and (string-match-p "[[][\s]*$" first-line)
+                               (string-match-p "\\]\\([\s]*\\)$" last-line))))
                     -4)
                    ((and (string-match-p "[[][\s]*$" first-line)
                          (when-let* ((last-line (car (last lines))))
