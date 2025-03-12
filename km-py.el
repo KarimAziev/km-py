@@ -874,6 +874,85 @@ Running the command at a point with 4 spaces of indentation will insert:
       (insert (string-join trimmed "\n")))))
 
 
+(defun km-py--double-quotes-to-single ()
+  "Convert double quotes to single quotes in the current buffer."
+  (save-excursion
+    (goto-char (point))
+    (with-undo-amalgamate
+      (while (re-search-forward "[\"]" nil t 1)
+        (cond ((looking-at "[\"][\"]")
+               (forward-sexp 1)
+               (when (looking-at "[\"]")
+                 (forward-char 1)))
+              ((looking-back "{\"" 0)
+               (re-search-forward "\"}" nil t 1))
+              (t
+               (let* ((c-start (point))
+                      (start (1- c-start))
+                      (end (save-excursion
+                             (forward-char -1)
+                             (forward-sexp 1)
+                             (point)))
+                      (c-end (1- end))
+                      (content (buffer-substring-no-properties c-start c-end)))
+                 (delete-region start end)
+                 (insert (concat "'" content "'")))))))))
+
+;;;###autoload
+(defun km-py-double-quotes-to-single ()
+  "Convert double quotes to single quotes in the current buffer.
+Convertation can be undone in a single step."
+  (interactive)
+  (km-py--double-quotes-to-single))
+
+;;;###autoload
+(defun km-py-copy-region-as-multi-line-string (beg end)
+  "Copy selected region as a multi-line string with escaped newlines.
+
+Argument BEG is the beginning position of the region to copy.
+
+Argument END is the ending position of the region to copy."
+  (interactive "r")
+  (let* ((str (buffer-substring-no-properties beg end))
+         (res (mapconcat
+               (lambda (it)
+                 (let ((item (prin1-to-string it)))
+                   (with-temp-buffer
+                     (erase-buffer)
+                     (insert item)
+                     (forward-char -1)
+                     (insert "\\")
+                     (insert "n")
+                     (buffer-substring-no-properties (point-min)
+                                                     (point-max)))))
+               (split-string str "\n")
+               "\n")))
+    (kill-new res)
+    (message "Copied")
+    res))
+
+;;;###autoload
+(defun km-py-remove-comments ()
+  "Remove comments from Python code in the current buffer."
+  (interactive)
+  (save-excursion
+    (goto-char (point-max))
+    (with-undo-amalgamate
+      (while (re-search-backward "#" nil t 1)
+        (unless (save-excursion
+                  (nth 3 (syntax-ppss (1+ (point)))))
+          (let ((end (line-end-position))
+                (start))
+            (skip-chars-backward "\s")
+            (setq start (cond ((looking-back "\n" 1)
+                               (forward-char -1)
+                               (skip-chars-backward "\s")
+                               (point))
+                              (t
+                               (point))))
+            (delete-region start end)))))))
+
+
 
 (provide 'km-py)
 ;;; km-py.el ends here
