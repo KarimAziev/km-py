@@ -28,7 +28,6 @@ It provides automatic configuration of Python LSP servers, virtual environment a
 | ~python~            |    0.28 |
 | ~eglot~             |    1.15 |
 | ~pyvenv~            |    1.21 |
-| ~poetry~ (optional) |   0.2.0 |
 
 
 * Installation

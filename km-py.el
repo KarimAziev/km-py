@@ -67,11 +67,6 @@
 (require 'eglot)
 (require 'pyvenv)
 
-(declare-function poetry-track-virtualenv "poetry")
-(declare-function poetry-get-virtualenv "poetry")
-(declare-function poetry-find-project-root "poetry")
-
-
 (defcustom km-py-lsp-server-args '((poetry . ("poetry"
                                               "run"
                                               "pyright-langserver"
@@ -269,13 +264,58 @@ directory."
           (add-hook 'flymake-diagnostic-functions #'python-flymake nil t)
           (flymake-mode 1))))))
 
+
+(defvar-local km-py--poetry-project-root nil
+  "Path to the current poetry project root.")
+
+(defun km-py--poetry-find-project-root ()
+  "Return the poetry project root if any."
+  (or km-py--poetry-project-root
+      (when-let* ((root (locate-dominating-file default-directory
+                                                "pyproject.toml"))
+                  (pyproject-contents
+                   (with-temp-buffer
+                     (insert-file-contents-literally (concat (file-name-as-directory
+                                                              root)
+                                                             "pyproject.toml"))
+                     (buffer-string)))
+                  (_ (string-match "^\\[tool\\.poetry\\]" pyproject-contents)))
+        (setq km-py--poetry-project-root root))))
+
+
+(defun km-py--poetry-get-virtualenv ()
+  "Retrieve the virtual environment path using Poetry."
+  (when-let* ((poetry (executable-find "poetry")))
+    (let ((start)
+          (end))
+      (with-temp-buffer
+        (when (zerop (call-process
+                      "env"
+                      nil
+                      t
+                      nil
+                      "-u"
+                      "VIRTUAL_ENV"
+                      poetry
+                      "env" "info"))
+          (when (re-search-backward "^Virtualenv$" nil t 1)
+            (catch 'done
+              (while
+                  (when (zerop (forward-line 1))
+                    (not (looking-at "^\n")))
+                (when (looking-at "^Path:")
+                  (setq start (re-search-forward "Path:[\s\t]+" nil t 1))
+                  (setq end (line-end-position))
+                  (throw 'done (buffer-substring-no-properties start end)))))))))))
+
+
 (defun km-py-poetry-setup ()
   "Configure Python environment with Poetry in Emacs."
   (require 'flymake)
-  (when-let* ((proj (poetry-find-project-root)))
-    (poetry-track-virtualenv)
-    (when-let* ((venv (poetry-get-virtualenv))
-               (poetry-python-path (km-py-poetry-which-python)))
+  (when-let* ((proj (km-py--poetry-find-project-root)))
+    (when-let* ((venv (km-py--poetry-get-virtualenv))
+                (poetry-python-path (km-py-poetry-which-python)))
+      (pyvenv-activate venv)
       (setq-local python-shell-interpreter poetry-python-path
                   python-shell-interpreter-args "-i"
                   python-interpreter poetry-python-path)
@@ -359,26 +399,45 @@ Argument VALUE is the new value to associate with SYMB in
 
 Argument PROGRAM is the name of the executable to check within the Poetry
 virtual environment."
-  (when-let* ((venv (poetry-get-virtualenv)))
-    (let ((file (concat venv "/bin/" program)))
+  (when-let* ((venv (km-py--poetry-get-virtualenv)))
+    (let ((file (expand-file-name (concat "bin/" program) venv)))
       (when (file-exists-p file)
         file))))
 
 (defun km-py-poetry-which-python ()
   "Find the Python executable managed by Poetry."
-  (with-temp-buffer
-    (when (zerop (call-process
-                  "env"
-                  nil
-                  t
-                  nil
-                  "-u"
-                  "VIRTUAL_ENV"
-                  (executable-find "poetry")
-                  "run"
-                  "which"
-                  "python"))
-      (string-trim (buffer-string)))))
+  (let ((poetry (executable-find "poetry")))
+    (with-temp-buffer
+      (when (zerop (call-process
+                    "env"
+                    nil
+                    t
+                    nil
+                    "-u"
+                    "VIRTUAL_ENV"
+                    poetry
+                    "run"
+                    "which"
+                    "python"))
+        (string-trim (buffer-string))))))
+
+(defun km-py--poetry-call (&rest args)
+  "Execute Poetry command with ARGS and return trimmed output string.
+
+Remaining arguments ARGS are strings passed as command arguments to the
+\"poetry\" executable."
+  (let ((poetry (executable-find "poetry")))
+    (with-temp-buffer
+      (when (zerop (apply #'call-process
+                          "env"
+                          nil
+                          t
+                          nil
+                          "-u"
+                          "VIRTUAL_ENV"
+                          poetry
+                          args))
+        (string-trim (buffer-string))))))
 
 
 
@@ -390,24 +449,24 @@ virtual environment."
             (not found)
             (not (string= "/" directory)))
       (setq found (when-let* ((name (seq-find
-                                    (lambda (venv-name)
-                                      (let ((venv-path
-                                             (expand-file-name
-                                              venv-name
-                                              directory))
-                                            (cands '("bin/activate"
-                                                     "Scripts/activate"
-                                                     "bin/activate.csh"
-                                                     "bin/activate.fish")))
-                                        (and (file-directory-p venv-path)
-                                             (seq-find
-                                              (lambda (file)
-                                                (file-exists-p
-                                                 (expand-file-name
-                                                  file
-                                                  venv-path)))
-                                              cands))))
-                                    km-py-venv-names)))
+                                     (lambda (venv-name)
+                                       (let ((venv-path
+                                              (expand-file-name
+                                               venv-name
+                                               directory))
+                                             (cands '("bin/activate"
+                                                      "Scripts/activate"
+                                                      "bin/activate.csh"
+                                                      "bin/activate.fish")))
+                                         (and (file-directory-p venv-path)
+                                              (seq-find
+                                               (lambda (file)
+                                                 (file-exists-p
+                                                  (expand-file-name
+                                                   file
+                                                   venv-path)))
+                                               cands))))
+                                     km-py-venv-names)))
                     (file-name-as-directory (expand-file-name name directory))))
       (setq directory (expand-file-name "../" directory)))
     found))
@@ -425,7 +484,8 @@ virtual environment."
                        (executable-find "python")))
        (setq-local python-interpreter python-shell-interpreter))
       ('poetry
-       (km-py-poetry-setup)))
+       ;; (km-py-poetry-setup)
+       ))
     (make-local-variable 'eglot-stay-out-of)
     (add-to-list 'eglot-stay-out-of 'flymake-diagnostic-functions)
     (add-hook 'flymake-diagnostic-functions #'eglot-flymake-backend nil t)
@@ -454,9 +514,9 @@ Optional argument DIRECTORY is the directory from which to start searching for
 the project root. If not provided, `default-directory' is used."
   (unless directory (setq directory default-directory))
   (if-let* ((found (seq-find
-                   (lambda (it)
-                     (file-exists-p (expand-file-name it directory)))
-                   km-py-project-markers-files)))
+                    (lambda (it)
+                      (file-exists-p (expand-file-name it directory)))
+                    km-py-project-markers-files)))
       (file-name-as-directory directory)
     (let ((parent (expand-file-name ".." directory)))
       (unless (or (string= parent directory)
@@ -649,7 +709,9 @@ Optional argument NO-RESTART is a prefix argument that, when non-nil,
 indicates that the Python process should not be restarted before sending
 the buffer."
   (interactive "P")
+  (km-py-setup-python-path)
   (km-py-shell-send-buffer (not no-restart)))
+
 
 ;;;###autoload
 (defun km-py-advice-shell-commands ()
@@ -938,20 +1000,21 @@ Argument END is the ending position of the region to copy."
   (save-excursion
     (goto-char (point-max))
     (with-undo-amalgamate
-      (while (re-search-backward "#" nil t 1)
-        (unless (save-excursion
-                  (nth 3 (syntax-ppss (1+ (point)))))
-          (let ((end (line-end-position))
-                (start))
-            (skip-chars-backward "\s")
-            (setq start (cond ((looking-back "\n" 1)
-                               (forward-char -1)
-                               (skip-chars-backward "\s")
-                               (point))
-                              (t
-                               (point))))
-            (delete-region start end)))))))
-
+      (let ((case-fold-search t))
+        (while (re-search-backward "#" nil t 1)
+          (unless (or (save-excursion
+                        (nth 3 (syntax-ppss (1+ (point)))))
+                      (looking-at "# \\(noqa\\|type\\): [a-z0-9]+"))
+            (let ((end (line-end-position))
+                  (start))
+              (skip-chars-backward "\s")
+              (setq start (cond ((looking-back "\n" 1)
+                                 (forward-char -1)
+                                 (skip-chars-backward "\s")
+                                 (point))
+                                (t
+                                 (point))))
+              (delete-region start end))))))))
 
 
 (provide 'km-py)
