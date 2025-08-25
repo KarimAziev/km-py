@@ -1016,6 +1016,21 @@ Argument END is the ending position of the region to copy."
                                  (point))))
               (delete-region start end))))))))
 
+;;;###autoload
+(defun km-py-guess-yas-snippet-symbol (&optional fallback-symbol items)
+  "Return a matched symbol from ITEMS or FALLBACK-SYMBOL if none found.
+
+Optional argument FALLBACK-SYMBOL is a string used when no match is found.
+
+Optional argument ITEMS is a list of strings to search for a matching pattern.
+If nil, the kill ring is used."
+  (if-let* ((found (seq-find
+                    (apply-partially #'string-match-p
+                                     "^\\(self[\\.]\\)?[a-z0-9\\_]+$")
+                    (or items kill-ring))))
+      (substring-no-properties found)
+    (format "%s" (or fallback-symbol ""))))
+
 
 (provide 'km-py)
 ;;; km-py.el ends here
