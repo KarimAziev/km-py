@@ -770,7 +770,16 @@ command."
 (defcustom km-py-indent-first-line-keywords '("class" "def" "if" "else" "elif"
                                               "for" "while" "try" "except"
                                               "finally" "async" "match" "case"
-                                              "with")
+                                              "with"
+                                              "@classmethod"
+                                              "@staticmethod"
+                                              "@property"
+                                              "@lru_cache"
+                                              "@wraps"
+                                              "@cache"
+                                              "@cached_property"
+                                              "@contextmanager"
+                                              "@abstractmethod")
   "List of Python keywords that initiate an indented code block.
 
 This variable holds a list of Python keywords that, when appearing at the
