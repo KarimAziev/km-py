@@ -176,8 +176,7 @@ the advice, use the `km-py--unadvice-shell-commands' function."
                                                       python-shell-send-region
                                                       python-shell-send-defun
                                                       python-shell-send-buffer
-                                                      python-shell-send-file
-                                                      python-describe-at-point)
+                                                      python-shell-send-file)
   "List of Python shell commands to auto-display buffer.
 
 A list of Python shell commands that trigger the automatic display of the Python
@@ -508,7 +507,7 @@ Remaining arguments ARGS are strings passed as command arguments to the
       (venv . ,venv))))
 
 (defun km-py-find-project-root (&optional directory)
-  "Locate the root DIRECTORY with `package.json'.
+  "Locate the root DIRECTORY with `km-py-project-markers-files'.
 
 Optional argument DIRECTORY is the directory from which to start searching for
 the project root. If not provided, `default-directory' is used."
@@ -540,8 +539,8 @@ the project root. If not provided, `default-directory' is used."
 (defun km-py-project-root ()
   "Find and return the root directory of the current Python project."
   (or
-   (km-py--project-root)
-   (km-py-find-project-root)))
+   (km-py-find-project-root)
+   (km-py--project-root)))
 
 
 (defun km-py-run-shell (&rest _)
