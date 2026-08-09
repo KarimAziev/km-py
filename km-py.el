@@ -80,7 +80,7 @@
   :group 'python
   :prefix "km-py-")
 
-(defgroup km-pyright nil
+(defgroup km-py-pyright nil
   "Pyright integration for `km-py'."
   :group 'km-py
   :prefix "km-py-")
@@ -225,7 +225,7 @@ command, if applicable (e.g., `poetry run`).
 
 To customize for a specific environment, modify the list by associating the
 desired symbol with a new list"
-  :group 'km-pyright
+  :group 'km-py-pyright
   :type '(alist
           :key-type
           (radio :tag "Project type"
@@ -581,7 +581,8 @@ The result is a plist with `:module', `:import-root', and `:kind'."
   (when (and program (not (string-empty-p program)))
     (cond ((file-name-absolute-p program)
            (and (file-executable-p program) program))
-          ((string-match-p "[/\\\\]" program)
+          ((or (string-match-p "/" program)
+               (string-match-p "\\\\" program))
            (let ((expanded (expand-file-name program root)))
              (and (file-executable-p expanded) expanded)))
           ((executable-find program)))))
