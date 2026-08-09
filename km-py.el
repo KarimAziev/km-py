@@ -28,13 +28,13 @@
 
 ;; km-py.el is a utility library that enhances the Python development
 ;; experience in Emacs by integrating with several Python environment
-;; management systems such as Poetry, Pipenv, virtualenv, and pip. It provides
+;; management systems such as Poetry, Pipenv, virtualenv, and pip.  It provides
 ;; automatic configuration of Python LSP servers, virtual environment activation,
 ;; and convenient shell-interaction functions, aiming to offer a seamless
 ;; workflow for Python projects within Emacs.
 
 ;; The library auto-detects project types, configures Python paths, and
-;; ensures that proper virtual environments are activated. It also auto-generates
+;; ensures that proper virtual environments are activated.  It also auto-generates
 ;; Pyright configuration files based on Poetry settings when needed.
 
 ;; Features include:
@@ -73,7 +73,9 @@
 (require 'seq)
 (require 'subr-x)
 (require 'eglot)
-(require 'pyvenv)
+(require 'pyvenv nil t)
+
+(declare-function pyvenv-activate "pyvenv" (directory))
 
 (defgroup km-py nil
   "Utilities for working with Python projects."
@@ -202,7 +204,7 @@ passed to the Python process."
                                                   "--stdio")))
   "List of arguments for Python LSP server based on environment.
 
-A list of arguments to pass to the Python LSP server when starting it. The list
+A list of arguments to pass to the Python LSP server when starting it.  The list
 is an association list where each element specifies the command to run the LSP
 server for a different Python environment management system.
 
@@ -220,7 +222,7 @@ Supported environment management systems and their corresponding symbols are:
 
 The default values are set to run the `pyright-langserver` with the `--stdio`
 argument, which is necessary for communication between the LSP client and
-server. The commands are prefixed with the environment management system's run
+server.  The commands are prefixed with the environment management system's run
 command, if applicable (e.g., `poetry run`).
 
 To customize for a specific environment, modify the list by associating the
@@ -266,16 +268,16 @@ that is commonly found in the root directory of a Python project."
                                       python-shell-switch-to-shell
                                       python-eldoc-at-point
                                       python-describe-at-point)
-  "List of commands that should be adviced to ensure a Python shell is running.
+  "List of commands that should be advised to ensure a Python shell is running.
 
 A list of Python shell commands that will be advised with to start a Python
 shell if not already running before executing command.
 
 Each element in the list should be a function that corresponds to a command used
-to interact with the Python shell. Custom functions can also be added to the
+to interact with the Python shell.  Custom functions can also be added to the
 list by selecting the \"Custom function\" tag and specifying the function name.
 
-To apply the advice, use the `km-py--advice-shell-commands' function. To remove
+To apply the advice, use the `km-py--advice-shell-commands' function.  To remove
 the advice, use the `km-py--unadvice-shell-commands' function."
   :group 'km-py
   :type '(repeat
@@ -298,14 +300,15 @@ the advice, use the `km-py--unadvice-shell-commands' function."
                                                       python-shell-send-file)
   "List of Python shell commands to auto-display buffer.
 
-A list of Python shell commands that trigger the automatic display of the Python
-shell buffer when executed. The default commands are `python-shell-send-string',
+A list of Python shell commands that trigger the automatic display of the
+Python shell buffer when executed.  The default commands are
+`python-shell-send-string',
 `python-shell-send-statement', `python-shell-send-region',
 `python-shell-send-defun', `python-shell-send-buffer', `python-shell-send-file',
 and `python-describe-at-point'.
 
 Each element in the list should be a function that, when called, is intended to
-interact with the Python shell. Custom functions can also be added to the list
+interact with the Python shell.  Custom functions can also be added to the list
 by selecting the \"Custom function\" option and specifying the function name."
   :group 'km-py
   :type '(repeat
@@ -325,8 +328,8 @@ A list of directory names that are considered potential Python virtual
 environments.
 
 Each element in the list is a string that represents a directory name to be
-checked when searching for a Python virtual environment in the current path. The
-search function looks for these directories at the current path and upwards,
+checked when searching for a Python virtual environment in the current path.
+The search function looks for these directories at the current path and upwards,
 stopping at the root directory or when a matching virtual environment is found."
   :group 'km-py
   :type '(repeat
@@ -594,7 +597,8 @@ The result is a plist with `:module', `:import-root', and `:kind'."
          (interpreter
           (if km-py-run-interpreter
               (or (km-py--resolve-executable km-py-run-interpreter root)
-                  (user-error "km-py: Configured interpreter is not executable: %s"
+                  (user-error
+                   "km-py: Configured interpreter is not executable: %s"
                               km-py-run-interpreter))
             (or (and venv (km-py--venv-python venv))
                 (km-py--resolve-executable python-shell-interpreter root)
@@ -635,9 +639,11 @@ strings passed to the program after the target."
          (expanded-file (if (file-exists-p file)
                             (file-truename file)
                           (expand-file-name file)))
-         (root (km-py--canonical-root
-                (or (km-py-project-root)
-                    (file-name-directory expanded-file))))
+         (root
+          (let ((default-directory (file-name-directory expanded-file)))
+            (km-py--canonical-root
+             (or (km-py-project-root)
+                 (file-name-directory expanded-file)))))
          (requested-mode (or mode 'auto))
          (module-info (km-py--module-info expanded-file root))
          (resolved-mode
@@ -652,7 +658,8 @@ strings passed to the program after the target."
          (overrides (km-py--effective-run-environment root))
          (environment
           (km-py--apply-environment-overrides
-           (km-py--apply-interpreter-environment process-environment interpreter)
+           (km-py--apply-interpreter-environment
+            process-environment interpreter)
            overrides))
          (import-root (plist-get module-info :import-root))
          (pythonpath (km-py--context-pythonpath root import-root environment))
@@ -807,7 +814,7 @@ directory."
   "Create or update Pyright config from Poetry environment.
 
 Optional argument FORCE is a boolean indicating whether to overwrite an existing
-Pyright configuration file. If nil, the file is not overwritten."
+Pyright configuration file.  If nil, the file is not overwritten."
   (when-let* ((proj
                (km-py-project-root))
               (pyright-config (expand-file-name "pyrightconfig.json" proj))
@@ -827,7 +834,7 @@ Pyright configuration file. If nil, the file is not overwritten."
   "Create/update Pyright config from Poetry environment.
 
 Optional argument FORCE is a boolean indicating whether to overwrite an existing
-Pyright configuration file. If nil, the file is not overwritten."
+Pyright configuration file.  If nil, the file is not overwritten."
   (interactive "P")
   (km-py--poetry-write-pyright-config force))
 
@@ -953,6 +960,7 @@ Remaining arguments ARGS are strings passed as command arguments to the
       ('poetry
        ;; (km-py-poetry-setup)
        ))
+    (km-py-apply-shell-context)
     (make-local-variable 'eglot-stay-out-of)
     (add-to-list 'eglot-stay-out-of 'flymake-diagnostic-functions)
     (add-hook 'flymake-diagnostic-functions #'eglot-flymake-backend nil t)
@@ -979,7 +987,7 @@ Remaining arguments ARGS are strings passed as command arguments to the
   "Locate the root DIRECTORY with `km-py-project-markers-files'.
 
 Optional argument DIRECTORY is the directory from which to start searching for
-the project root. If not provided, `default-directory' is used."
+the project root.  If not provided, `default-directory' is used."
   (unless directory (setq directory default-directory))
   (if-let* ((found (seq-find
                     (lambda (it)
@@ -1066,7 +1074,8 @@ the project root. If not provided, `default-directory' is used."
   (km-py--maybe-save-run-buffer)
   (let ((context (km-py-resolve-run-context buffer-file-name mode arguments)))
     (when (string-suffix-p ".__init__" (km-py-run-context-target context))
-      (message "km-py: Running __init__.py as a module may initialize its package twice"))
+      (message
+       "km-py: Running __init__.py as a module may initialize its package twice"))
     (km-py--start-run-context context)))
 
 ;;;###autoload
@@ -1217,7 +1226,10 @@ argument BUFFER-LOCAL, add it only in the current buffer."
      (list (read-directory-name "Add Python import root: " root nil t)
            current-prefix-arg)))
   (let* ((root (km-py--current-project-root-or-error))
-         (path (directory-file-name (expand-file-name directory root))))
+         (path (directory-file-name (expand-file-name directory root)))
+         (path (if (file-exists-p path)
+                   (directory-file-name (file-truename path))
+                 path)))
     (unless (file-directory-p path)
       (user-error "km-py: Not a directory: %s" path))
     (if buffer-local
@@ -1265,9 +1277,11 @@ according to `km-py-run-redact-environment-regexp'."
         (erase-buffer)
         (insert (format "Project root:  %s\n" (km-py-run-context-root context))
                 (format "Working dir:   %s\n" (km-py-run-context-cwd context))
-                (format "Interpreter:   %s\n" (km-py-run-context-interpreter context))
+                (format "Interpreter:   %s\n"
+                        (km-py-run-context-interpreter context))
                 (format "Mode:          %s\n" (km-py-run-context-mode context))
-                (format "Target:        %s\n" (km-py-run-context-target context))
+                (format "Target:        %s\n"
+                        (km-py-run-context-target context))
                 (format "Command:       %s\n"
                         (km-py--command-string
                          (km-py-run-context-command context)))
@@ -1312,7 +1326,8 @@ process environment."
          (overrides (km-py--effective-run-environment root))
          (environment
           (km-py--apply-environment-overrides
-           (km-py--apply-interpreter-environment process-environment interpreter)
+           (km-py--apply-interpreter-environment
+            process-environment interpreter)
            overrides))
          (paths (km-py--context-pythonpath root nil environment))
          (shell-overrides
@@ -1359,7 +1374,8 @@ process environment."
                            km-py--shell-context-signature)))
       (setq-local km-py--shell-context-warning-signature
                   km-py--shell-context-signature)
-      (message "km-py: Python settings changed; restart the shell to apply them"))))
+      (message
+       "km-py: Python settings changed; restart the shell to apply them"))))
 
 (defun km-py-run-shell (&rest _)
   "Start a project-configured Python shell if one is not already running."
@@ -1596,7 +1612,7 @@ command."
 
 This variable holds a list of Python keywords that, when appearing at the
 beginning of a line, indicate that the subsequent lines should be indented
-relative to that line. These keywords are associated with code structures
+relative to that line.  These keywords are associated with code structures
 that introduce a new block in Python syntax expect the following lines to be
 indented by 4 spaces.
 
@@ -1700,7 +1716,7 @@ Argument STR is the string to ensure the first line is properly indented."
 (defun km-py-yank (&optional arg)
   "Paste the current kill ring entry with adjusted indentation based on prefix.
 
-The prefix argument ARG determines the behavior of the yank operation. See
+The prefix argument ARG determines the behavior of the yank operation.  See
 `yank' command.
 
 This command facilitates the insertion of previously killed (cut/copied) text

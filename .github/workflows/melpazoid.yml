@@ -29,3 +29,8 @@ jobs:
         # set this to false (or remove it) if the package isn't on MELPA:
         EXIST_OK: false
       run: echo $GITHUB_REF && make -C ~/melpazoid
+    - name: Run ERT tests
+      run: |
+        emacs -Q --batch -L . -L test \
+          -l test/km-py-tests.el \
+          -f ert-run-tests-batch-and-exit
