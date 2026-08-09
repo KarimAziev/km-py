@@ -127,9 +127,9 @@ run the last saved version of the file."
                  (const :tag "Always save" t)
                  (const :tag "Run last saved version" nil)))
 
-(defcustom km-py-run-redact-environment-regexp
-  (regexp-opt '("PASSWORD" "PASSWD" "SECRET" "TOKEN" "API_KEY"
-                "ACCESS_KEY" "PRIVATE_KEY") 'words)
+(defcustom km-py-run-redact-environment-regexp (regexp-opt '("PASSWORD" "PASSWD" "SECRET" "TOKEN" "API_KEY"
+                                                             "ACCESS_KEY" "PRIVATE_KEY")
+                                                           'words)
   "Regexp matching environment names whose values should not be displayed.
 
 This affects `km-py-run-describe-context' only.  It does not alter the value
