@@ -4,7 +4,7 @@
 
 ;; Author: Karim Aziiev <karim.aziiev@gmail.com>
 ;; URL: https://github.com/KarimAziev/km-py
-;; Version: 0.1.0
+;; Version: 0.2.0
 ;; Keywords: languages
 ;; Package-Requires: ((emacs "29.1") (project "0.11.1") (python "0.28") (eglot "1.17") (pyvenv "1.21"))
 ;; SPDX-License-Identifier: GPL-3.0-or-later
@@ -38,6 +38,10 @@
 ;; Pyright configuration files based on Poetry settings when needed.
 
 ;; Features include:
+;; - Fresh-process execution that automatically chooses between direct file and
+;;   package-aware `python -m' semantics.
+;; - Project-session and buffer-local environment-variable and `PYTHONPATH'
+;;   configuration without modifying Emacs's global process environment.
 ;; - Customization options for specifying LSP server arguments and Python
 ;;   shell commands to be advised with auto-start functionality.
 ;; - Commands for setting up the Python environment and integrating with
@@ -62,10 +66,123 @@
 
 ;;; Code:
 
+(require 'cl-lib)
+(require 'compile)
 (require 'project)
 (require 'python)
+(require 'seq)
+(require 'subr-x)
 (require 'eglot)
 (require 'pyvenv)
+
+(defgroup km-py nil
+  "Utilities for working with Python projects."
+  :group 'python
+  :prefix "km-py-")
+
+(defgroup km-pyright nil
+  "Pyright integration for `km-py'."
+  :group 'km-py
+  :prefix "km-py-")
+
+(defcustom km-py-run-interpreter nil
+  "Python interpreter used by `km-py-run' commands.
+
+When nil, prefer a Python executable in the nearest virtual environment, then
+`python-shell-interpreter', `python3', and `python'.  A relative filename is
+resolved from the Python project root."
+  :group 'km-py
+  :type '(choice (const :tag "Detect automatically" nil)
+                 (file :tag "Python interpreter")))
+
+(defcustom km-py-run-environment nil
+  "Environment variable overrides for Python processes.
+
+Each element is a cons cell (NAME . VALUE).  The variables are applied only to
+processes started by `km-py-run' commands or to new inferior Python shells; the
+global Emacs `process-environment' is not modified.  This option may be set in
+directory-local variables."
+  :group 'km-py
+  :type '(alist :key-type (string :tag "Name")
+                :value-type (string :tag "Value")))
+
+(defcustom km-py-run-pythonpath nil
+  "Additional import roots for Python processes.
+
+Relative directories are resolved from the current Python project root.  These
+entries are prepended to inherited `PYTHONPATH' entries and may also be set in
+directory-local variables."
+  :group 'km-py
+  :type '(repeat (directory :tag "Import root")))
+
+(defcustom km-py-run-save-buffer 'ask
+  "Whether `km-py-run' commands save a modified source buffer.
+
+When `ask', ask before saving.  When non-nil, save without asking.  When nil,
+run the last saved version of the file."
+  :group 'km-py
+  :type '(choice (const :tag "Ask" ask)
+                 (const :tag "Always save" t)
+                 (const :tag "Run last saved version" nil)))
+
+(defcustom km-py-run-redact-environment-regexp
+  (regexp-opt '("PASSWORD" "PASSWD" "SECRET" "TOKEN" "API_KEY"
+                "ACCESS_KEY" "PRIVATE_KEY") 'words)
+  "Regexp matching environment names whose values should not be displayed.
+
+This affects `km-py-run-describe-context' only.  It does not alter the value
+passed to the Python process."
+  :group 'km-py
+  :type 'regexp)
+
+(cl-defstruct (km-py-run-context
+               (:constructor km-py-run-context-create))
+  "Fully resolved settings for one Python invocation."
+  root
+  cwd
+  interpreter
+  mode
+  target
+  file
+  arguments
+  command
+  environment
+  environment-overrides
+  pythonpath
+  import-root)
+
+(defvar km-py--project-run-settings (make-hash-table :test #'equal)
+  "Session-local run settings indexed by canonical project root.")
+
+(defvar km-py--last-run-contexts (make-hash-table :test #'equal)
+  "Last successful run context indexed by canonical project root.")
+
+(defvar km-py-run-arguments-history nil
+  "Minibuffer history for Python program arguments.")
+
+(defvar km-py-run-environment-name-history nil
+  "Minibuffer history for environment variable names.")
+
+(defvar km-py-run-environment-value-history nil
+  "Minibuffer history for environment variable values.")
+
+(defvar-local km-py--run-context nil
+  "Run context associated with a `km-py' output buffer.")
+
+(defvar-local km-py--shell-base-process-environment nil
+  "Original `python-shell-process-environment' before km-py overrides.")
+
+(defvar-local km-py--shell-base-extra-pythonpaths nil
+  "Original `python-shell-extra-pythonpaths' before km-py additions.")
+
+(defvar-local km-py--shell-context-captured nil
+  "Non-nil after original inferior-shell settings have been captured.")
+
+(defvar-local km-py--shell-context-signature nil
+  "Signature of the environment desired for the current Python shell.")
+
+(defvar-local km-py--shell-context-warning-signature nil
+  "Last stale Python shell context signature reported to the user.")
 
 (defcustom km-py-lsp-server-args '((poetry . ("poetry"
                                               "run"
@@ -115,7 +232,9 @@ desired symbol with a new list"
            (const poetry)
            (const pipenv)
            (const pip)
-           (const virtualenv))
+           (const conda)
+           (const virtualenv)
+           (const setuptools))
           :value-type
           (repeat
            (string :tag "Server arguments"))))
@@ -212,6 +331,356 @@ stopping at the root directory or when a matching virtual environment is found."
   :group 'km-py
   :type '(repeat
           (string :tag "Venv directory name")))
+
+(defun km-py--environment-alist-p (value)
+  "Return non-nil when VALUE is a valid environment override alist."
+  (and (listp value)
+       (seq-every-p
+        (lambda (entry)
+          (and (consp entry)
+               (stringp (car entry))
+               (string-match-p "\\`[[:alpha:]_][[:alnum:]_]*\\'" (car entry))
+               (stringp (cdr entry))
+               (not (string-match-p "\0" (cdr entry)))))
+        value)))
+
+(defun km-py--string-list-p (value)
+  "Return non-nil when VALUE is a list containing only strings."
+  (and (listp value) (seq-every-p #'stringp value)))
+
+(put 'km-py-run-environment 'safe-local-variable
+     #'km-py--environment-alist-p)
+(put 'km-py-run-pythonpath 'safe-local-variable #'km-py--string-list-p)
+(put 'km-py-run-interpreter 'safe-local-variable
+     (lambda (value) (or (null value) (stringp value))))
+
+(defun km-py--canonical-root (root)
+  "Return a canonical directory name for ROOT."
+  (when root
+    (file-name-as-directory
+     (if (file-exists-p root)
+         (file-truename root)
+       (expand-file-name root)))))
+
+(defun km-py--project-setting (root property)
+  "Return session setting PROPERTY for project ROOT."
+  (plist-get (gethash (km-py--canonical-root root)
+                      km-py--project-run-settings)
+             property))
+
+(defun km-py--set-project-setting (root property value)
+  "Set session setting PROPERTY to VALUE for project ROOT."
+  (let* ((key (km-py--canonical-root root))
+         (settings (copy-sequence (gethash key km-py--project-run-settings))))
+    (puthash key (plist-put settings property value)
+             km-py--project-run-settings)
+    value))
+
+(defun km-py--alist-put (alist key value)
+  "Return a copy of ALIST with KEY associated with VALUE."
+  (let ((result (copy-tree alist)))
+    (if-let* ((entry (assoc-string key result)))
+        (setcdr entry value)
+      (push (cons key value) result))
+    result))
+
+(defun km-py--alist-delete (alist key)
+  "Return a copy of ALIST without entries whose key equals KEY."
+  (seq-remove (lambda (entry) (string= key (car entry))) alist))
+
+(defun km-py--merge-environment-alists (&rest alists)
+  "Merge ALISTS from weakest to strongest precedence."
+  (let (result)
+    (dolist (alist alists result)
+      (dolist (entry alist)
+        (setq result (km-py--alist-put result (car entry) (cdr entry)))))))
+
+(defun km-py--effective-run-environment (root)
+  "Return effective environment overrides for project ROOT."
+  (km-py--merge-environment-alists
+   (default-value 'km-py-run-environment)
+   (km-py--project-setting root :environment)
+   (when (local-variable-p 'km-py-run-environment)
+     km-py-run-environment)))
+
+(defun km-py--delete-duplicates-by (items key-function)
+  "Return ITEMS without duplicate values produced by KEY-FUNCTION."
+  (let (keys result)
+    (dolist (item items (nreverse result))
+      (let ((key (funcall key-function item)))
+        (unless (member key keys)
+          (push key keys)
+          (push item result))))))
+
+(defun km-py--effective-run-pythonpath (root)
+  "Return configured Python import roots for project ROOT.
+
+Paths from buffer-local settings take precedence over project-session and
+global settings.  Relative paths are resolved from ROOT."
+  (let* ((local (when (local-variable-p 'km-py-run-pythonpath)
+                  km-py-run-pythonpath))
+         (paths (append local
+                        (km-py--project-setting root :pythonpath)
+                        (default-value 'km-py-run-pythonpath))))
+    (km-py--delete-duplicates-by
+     (mapcar (lambda (path)
+               (let ((expanded
+                      (directory-file-name
+                       (expand-file-name path (or root default-directory)))))
+                 (if (file-exists-p expanded)
+                     (directory-file-name (file-truename expanded))
+                   expanded)))
+             paths)
+     (lambda (path)
+       (if (file-exists-p path) (file-truename path) path)))))
+
+(defun km-py--environment-remove (name environment)
+  "Return ENVIRONMENT without a variable named NAME."
+  (let ((prefix (concat name "=")))
+    (seq-remove (lambda (entry) (string-prefix-p prefix entry)) environment)))
+
+(defun km-py--environment-set (name value environment)
+  "Return ENVIRONMENT with NAME set to VALUE."
+  (cons (concat name "=" value)
+        (km-py--environment-remove name environment)))
+
+(defun km-py--environment-get (name environment)
+  "Return the value of NAME in ENVIRONMENT, or nil when absent."
+  (let* ((prefix (concat name "="))
+         (entry (seq-find (lambda (item) (string-prefix-p prefix item))
+                          environment)))
+    (when entry (substring entry (length prefix)))))
+
+(defun km-py--apply-environment-overrides (environment overrides)
+  "Apply OVERRIDES alist to a copy of ENVIRONMENT."
+  (let ((result (copy-sequence environment)))
+    (dolist (entry overrides result)
+      (setq result (km-py--environment-set (car entry) (cdr entry) result)))))
+
+(defun km-py--interpreter-venv (interpreter)
+  "Return the virtual environment containing INTERPRETER, or nil."
+  (let* ((bin-directory (file-name-directory interpreter))
+         (candidate (and bin-directory
+                         (file-name-directory
+                          (directory-file-name bin-directory)))))
+    (when (and candidate
+               (file-exists-p (expand-file-name "pyvenv.cfg" candidate)))
+      (directory-file-name candidate))))
+
+(defun km-py--apply-interpreter-environment (environment interpreter)
+  "Return ENVIRONMENT adjusted for INTERPRETER's virtual environment."
+  (if-let* ((venv (km-py--interpreter-venv interpreter)))
+      (let* ((bin (directory-file-name (file-name-directory interpreter)))
+             (path (km-py--split-path-list
+                    (km-py--environment-get "PATH" environment)))
+             (path (km-py--delete-duplicates-by
+                    (cons bin path)
+                    (lambda (item)
+                      (if (file-exists-p item) (file-truename item) item))))
+             (result (km-py--environment-set "VIRTUAL_ENV" venv environment)))
+        (km-py--environment-set "PATH" (km-py--join-path-list path) result))
+    environment))
+
+(defun km-py--path-separator-string ()
+  "Return variable `path-separator' as a string."
+  (if (characterp path-separator)
+      (char-to-string path-separator)
+    path-separator))
+
+(defun km-py--split-path-list (value)
+  "Split environment path VALUE using the platform path separator."
+  (if (or (null value) (string-empty-p value))
+      nil
+    (split-string value (regexp-quote (km-py--path-separator-string)) t)))
+
+(defun km-py--join-path-list (paths)
+  "Join PATHS using the platform path separator."
+  (mapconcat #'identity paths (km-py--path-separator-string)))
+
+(defun km-py--python-identifier-p (value)
+  "Return non-nil when VALUE can be a Python module-name component."
+  (and (stringp value)
+       (string-match-p "\\`[[:alpha:]_][[:alnum:]_]*\\'" value)))
+
+(defun km-py--package-directory-chain-p (import-root directories)
+  "Return non-nil when DIRECTORIES below IMPORT-ROOT form a package chain."
+  (and directories
+       (let ((directory import-root)
+             (valid t))
+         (dolist (component directories valid)
+           (setq directory (expand-file-name component directory))
+           (unless (file-exists-p (expand-file-name "__init__.py" directory))
+             (setq valid nil))))))
+
+(defun km-py--module-candidates (root)
+  "Return possible import roots for project ROOT.
+
+Each result is a cons cell whose car is a directory and whose cdr says whether
+the directory was explicitly configured, which permits namespace packages."
+  (let* ((configured (km-py--effective-run-pythonpath root))
+         (src (expand-file-name "src" root))
+         (candidates
+          (append (mapcar (lambda (path) (cons path t)) configured)
+                  (when (file-directory-p src) (list (cons src nil)))
+                  (list (cons (directory-file-name root) nil)))))
+    (sort (km-py--delete-duplicates-by
+           candidates
+           (lambda (candidate)
+             (let ((path (car candidate)))
+               (if (file-exists-p path) (file-truename path) path))))
+          (lambda (left right) (> (length (car left)) (length (car right)))))))
+
+(defun km-py--module-info (file root)
+  "Return module information for FILE in project ROOT, or nil.
+
+The result is a plist with `:module', `:import-root', and `:kind'."
+  (let* ((root (km-py--canonical-root root))
+         (expanded-file (if (file-exists-p file)
+                            (file-truename file)
+                          (expand-file-name file)))
+        result)
+    (catch 'done
+      (dolist (candidate (km-py--module-candidates root))
+        (let ((import-root (file-name-as-directory (car candidate)))
+              (explicit (cdr candidate)))
+          (when (file-in-directory-p expanded-file import-root)
+            (let* ((relative (file-relative-name expanded-file import-root))
+                   (without-extension (file-name-sans-extension relative))
+                   (components (split-string without-extension "/" t))
+                   (filename (car (last components)))
+                   (directories (butlast components))
+                   (package-chain
+                    (km-py--package-directory-chain-p import-root directories)))
+              (when (and (string= (file-name-extension expanded-file) "py")
+                         (seq-every-p #'km-py--python-identifier-p components)
+                         (or package-chain
+                             (and explicit directories)))
+                (let ((kind 'module)
+                      (module-components components))
+                  (when (string= filename "__main__")
+                    (setq kind 'package
+                          module-components directories))
+                  (when (and module-components
+                             (seq-every-p #'km-py--python-identifier-p
+                                          module-components))
+                    (setq result
+                          (list :module (string-join module-components ".")
+                                :import-root (directory-file-name import-root)
+                                :kind kind))
+                    (throw 'done result))))))))
+      result)))
+
+(defun km-py--venv-python (venv)
+  "Return the Python executable in VENV, or nil."
+  (seq-find #'file-executable-p
+            (mapcar (lambda (relative) (expand-file-name relative venv))
+                    '("bin/python" "Scripts/python.exe" "Scripts/python"))))
+
+(defun km-py--resolve-executable (program root)
+  "Resolve PROGRAM as an executable, relative to ROOT when appropriate."
+  (when (and program (not (string-empty-p program)))
+    (cond ((file-name-absolute-p program)
+           (and (file-executable-p program) program))
+          ((string-match-p "[/\\\\]" program)
+           (let ((expanded (expand-file-name program root)))
+             (and (file-executable-p expanded) expanded)))
+          ((executable-find program)))))
+
+(defun km-py--run-interpreter (root)
+  "Return the Python interpreter for project ROOT, or signal an error."
+  (let* ((default-directory root)
+         (venv (km-py-find-venv-path))
+         (interpreter
+          (if km-py-run-interpreter
+              (or (km-py--resolve-executable km-py-run-interpreter root)
+                  (user-error "km-py: Configured interpreter is not executable: %s"
+                              km-py-run-interpreter))
+            (or (and venv (km-py--venv-python venv))
+                (km-py--resolve-executable python-shell-interpreter root)
+                (executable-find "python3")
+                (executable-find "python")))))
+    (or interpreter
+        (user-error "km-py: Cannot find a Python interpreter for %s" root))))
+
+(defun km-py--context-pythonpath (root import-root environment)
+  "Return merged Python paths for ROOT, IMPORT-ROOT, and ENVIRONMENT."
+  (let ((src (expand-file-name "src" root)))
+    (km-py--delete-duplicates-by
+     (delq nil
+           (append (km-py--effective-run-pythonpath root)
+                   (list import-root)
+                   (when (file-directory-p src)
+                     (list (directory-file-name src)))
+                   (list (directory-file-name root))
+                   (km-py--split-path-list
+                    (km-py--environment-get "PYTHONPATH" environment))))
+     (lambda (path)
+       (cond ((string-empty-p path) path)
+             ((file-exists-p path) (file-truename path))
+             (t path))))))
+
+(defun km-py--command-string (arguments)
+  "Return shell command string for argv list ARGUMENTS."
+  (mapconcat #'shell-quote-argument arguments " "))
+
+(defun km-py-resolve-run-context (&optional file mode arguments)
+  "Resolve a Python run context for FILE, MODE, and ARGUMENTS.
+
+MODE is one of `auto', `file', or `module'.  In `auto' mode, run package files
+with Python's `-m' option and other files by filename.  ARGUMENTS is a list of
+strings passed to the program after the target."
+  (let* ((file (or file buffer-file-name
+                   (user-error "km-py: Current buffer does not visit a file")))
+         (expanded-file (if (file-exists-p file)
+                            (file-truename file)
+                          (expand-file-name file)))
+         (root (km-py--canonical-root
+                (or (km-py-project-root)
+                    (file-name-directory expanded-file))))
+         (requested-mode (or mode 'auto))
+         (module-info (km-py--module-info expanded-file root))
+         (resolved-mode
+          (pcase requested-mode
+            ('auto (if module-info 'module 'file))
+            ((or 'file 'module) requested-mode)
+            (_ (user-error "km-py: Unsupported run mode %S" requested-mode))))
+         (_ (when (and (eq resolved-mode 'module) (null module-info))
+              (user-error "km-py: Cannot derive a module name for %s"
+                          expanded-file)))
+         (interpreter (km-py--run-interpreter root))
+         (overrides (km-py--effective-run-environment root))
+         (environment
+          (km-py--apply-environment-overrides
+           (km-py--apply-interpreter-environment process-environment interpreter)
+           overrides))
+         (import-root (plist-get module-info :import-root))
+         (pythonpath (km-py--context-pythonpath root import-root environment))
+         (environment (if pythonpath
+                          (km-py--environment-set
+                           "PYTHONPATH" (km-py--join-path-list pythonpath)
+                           environment)
+                        environment))
+         (target (if (eq resolved-mode 'module)
+                     (plist-get module-info :module)
+                   expanded-file))
+         (arguments (or arguments nil))
+         (command (append (list interpreter)
+                          (when (eq resolved-mode 'module) (list "-m"))
+                          (list target)
+                          arguments)))
+    (km-py-run-context-create
+     :root root
+     :cwd root
+     :interpreter interpreter
+     :mode resolved-mode
+     :target target
+     :file expanded-file
+     :arguments arguments
+     :command command
+     :environment environment
+     :environment-overrides overrides
+     :pythonpath pythonpath
+     :import-root import-root)))
 
 (defun km-py-get-project-type (project-directory)
   "Determine Python project type based on files in PROJECT-DIRECTORY.
@@ -477,11 +946,9 @@ Remaining arguments ARGS are strings passed as command arguments to the
          (venv-path (km-py-find-venv-path)))
     (pcase type
       ((guard venv-path)
-       (pyvenv-activate venv-path)
-       (setq-local python-shell-interpreter
-                   (or (executable-find "python3")
-                       (executable-find "python")))
-       (setq-local python-interpreter python-shell-interpreter))
+       (when-let* ((interpreter (km-py--venv-python venv-path)))
+         (setq-local python-shell-interpreter interpreter
+                     python-interpreter interpreter)))
       ('poetry
        ;; (km-py-poetry-setup)
        ))
@@ -489,6 +956,7 @@ Remaining arguments ARGS are strings passed as command arguments to the
     (add-to-list 'eglot-stay-out-of 'flymake-diagnostic-functions)
     (add-hook 'flymake-diagnostic-functions #'eglot-flymake-backend nil t)
     (when-let* ((server-args (cdr (assq type km-py-lsp-server-args))))
+      (setq-local eglot-server-programs (copy-tree eglot-server-programs))
       (km-py-eglot-update-or-insert-mode '(python-mode python-ts-mode)
                                          server-args))
     (eglot-ensure)))
@@ -542,12 +1010,364 @@ the project root. If not provided, `default-directory' is used."
    (km-py-find-project-root)
    (km-py--project-root)))
 
+(defun km-py--current-project-root-or-error ()
+  "Return the current Python project root, or signal a user error."
+  (or (km-py-project-root)
+      (and buffer-file-name (file-name-directory buffer-file-name))
+      (user-error "km-py: Cannot determine the current Python project root")))
+
+(defun km-py--read-run-arguments (root)
+  "Read Python program arguments for project ROOT."
+  (let* ((previous (km-py--project-setting root :arguments))
+         (initial (when previous (km-py--command-string previous)))
+         (input (read-string "Program arguments: " initial
+                             'km-py-run-arguments-history)))
+    (if (string-empty-p input) nil (split-string-and-unquote input))))
+
+(defun km-py--maybe-save-run-buffer ()
+  "Save the current source buffer according to `km-py-run-save-buffer'."
+  (when (and buffer-file-name (buffer-modified-p))
+    (pcase km-py-run-save-buffer
+      ('ask (when (y-or-n-p "Save buffer before running? ") (save-buffer)))
+      ((pred identity) (save-buffer))))
+  (when (and buffer-file-name (not (file-exists-p buffer-file-name)))
+    (user-error "km-py: Save %s before running it" (buffer-name))))
+
+(defun km-py--run-buffer-name (context)
+  "Return a compilation buffer name for CONTEXT."
+  (let* ((root (km-py-run-context-root context))
+         (project-name
+          (file-name-nondirectory (directory-file-name root)))
+         (target (km-py-run-context-target context)))
+    (format "*km-py:%s:%s*" project-name
+            (if (eq (km-py-run-context-mode context) 'module)
+                target
+              (file-name-nondirectory target)))))
+
+(defun km-py--start-run-context (context)
+  "Start a compilation process described by CONTEXT."
+  (let* ((default-directory (km-py-run-context-cwd context))
+         (process-environment (km-py-run-context-environment context))
+         (command (km-py--command-string
+                   (km-py-run-context-command context)))
+         (buffer-name (km-py--run-buffer-name context))
+         (buffer
+          (compilation-start command 'compilation-mode
+                             (lambda (_mode) buffer-name))))
+    (with-current-buffer buffer
+      (setq-local km-py--run-context context))
+    (puthash (km-py--canonical-root (km-py-run-context-root context))
+             context km-py--last-run-contexts)
+    buffer))
+
+(defun km-py--run-current-file (mode arguments)
+  "Run the current file with MODE and program ARGUMENTS."
+  (km-py--maybe-save-run-buffer)
+  (let ((context (km-py-resolve-run-context buffer-file-name mode arguments)))
+    (when (string-suffix-p ".__init__" (km-py-run-context-target context))
+      (message "km-py: Running __init__.py as a module may initialize its package twice"))
+    (km-py--start-run-context context)))
+
+;;;###autoload
+(defun km-py-run-dwim (&optional edit)
+  "Run the current Python file using automatically selected semantics.
+
+Package files run with `python -m'; standalone files run by filename.  Reuse
+program arguments last entered for the current project.  With prefix argument
+EDIT, call `km-py-run' to edit the mode and arguments first."
+  (interactive "P")
+  (if edit
+      (call-interactively #'km-py-run)
+    (let* ((root (km-py--current-project-root-or-error))
+           (arguments (km-py--project-setting root :arguments)))
+      (km-py--run-current-file 'auto arguments))))
+
+;;;###autoload
+(defun km-py-run ()
+  "Prompt for execution mode and arguments, then run the current Python file."
+  (interactive)
+  (let* ((root (km-py--current-project-root-or-error))
+         (mode (intern
+                (completing-read "Execution mode: "
+                                 '("auto" "module" "file") nil t nil nil
+                                 "auto")))
+         (arguments (km-py--read-run-arguments root)))
+    (km-py--set-project-setting root :arguments arguments)
+    (km-py--run-current-file mode arguments)))
+
+;;;###autoload
+(defun km-py-run-file (&optional edit-arguments)
+  "Run the current Python buffer directly by filename.
+
+With prefix argument EDIT-ARGUMENTS, prompt for program arguments."
+  (interactive "P")
+  (let* ((root (km-py--current-project-root-or-error))
+         (arguments (if edit-arguments
+                        (km-py--read-run-arguments root)
+                      (km-py--project-setting root :arguments))))
+    (when edit-arguments
+      (km-py--set-project-setting root :arguments arguments))
+    (km-py--run-current-file 'file arguments)))
+
+;;;###autoload
+(defun km-py-run-module (&optional edit-arguments)
+  "Run the current Python buffer as an importable module.
+
+With prefix argument EDIT-ARGUMENTS, prompt for program arguments."
+  (interactive "P")
+  (let* ((root (km-py--current-project-root-or-error))
+         (arguments (if edit-arguments
+                        (km-py--read-run-arguments root)
+                      (km-py--project-setting root :arguments))))
+    (when edit-arguments
+      (km-py--set-project-setting root :arguments arguments))
+    (km-py--run-current-file 'module arguments)))
+
+;;;###autoload
+(defun km-py-run-repeat ()
+  "Repeat the last `km-py-run' invocation for the current project."
+  (interactive)
+  (let* ((root (km-py--canonical-root
+                (km-py--current-project-root-or-error)))
+         (context (gethash root km-py--last-run-contexts)))
+    (unless context
+      (user-error "km-py: No previous run for %s" root))
+    (km-py--maybe-save-run-buffer)
+    (km-py--start-run-context context)))
+
+(defun km-py--environment-names ()
+  "Return environment variable names available for completion."
+  (delete-dups
+   (append (mapcar #'car
+                   (km-py--effective-run-environment
+                    (km-py--current-project-root-or-error)))
+           (mapcar (lambda (entry)
+                     (car (split-string entry "=")))
+                   process-environment))))
+
+;;;###autoload
+(defun km-py-run-set-env (name value &optional buffer-local)
+  "Set environment variable NAME to VALUE for Python runs.
+
+By default, remember the setting for the current project and Emacs session.
+With prefix argument BUFFER-LOCAL, set it only in the current buffer."
+  (interactive
+   (let* ((name (completing-read "Environment variable: "
+                                 (km-py--environment-names) nil nil nil
+                                 'km-py-run-environment-name-history))
+          (root (km-py--current-project-root-or-error))
+          (current (cdr (assoc-string
+                         name (km-py--effective-run-environment root)))))
+     (list name
+           (read-string (format "%s value: " name) current
+                        'km-py-run-environment-value-history)
+           current-prefix-arg)))
+  (unless (string-match-p "\\`[[:alpha:]_][[:alnum:]_]*\\'" name)
+    (user-error "km-py: Invalid environment variable name %S" name))
+  (let ((root (km-py--current-project-root-or-error)))
+    (if buffer-local
+        (setq-local km-py-run-environment
+                    (km-py--alist-put
+                     (when (local-variable-p 'km-py-run-environment)
+                       km-py-run-environment)
+                     name value))
+      (km-py--set-project-setting
+       root :environment
+       (km-py--alist-put (km-py--project-setting root :environment)
+                         name value)))
+    (message "km-py: Set %s for %s scope" name
+             (if buffer-local "buffer" "project-session"))))
+
+;;;###autoload
+(defun km-py-run-unset-env (name &optional buffer-local)
+  "Remove the configured environment override NAME.
+
+By default, remove the current project-session override.  With prefix argument
+BUFFER-LOCAL, remove the current buffer-local override instead."
+  (interactive
+   (list (completing-read
+          "Remove environment override: "
+          (mapcar #'car
+                  (km-py--effective-run-environment
+                   (km-py--current-project-root-or-error)))
+          nil t nil 'km-py-run-environment-name-history)
+         current-prefix-arg))
+  (let ((root (km-py--current-project-root-or-error)))
+    (if buffer-local
+        (setq-local km-py-run-environment
+                    (km-py--alist-delete
+                     (when (local-variable-p 'km-py-run-environment)
+                       km-py-run-environment)
+                     name))
+      (km-py--set-project-setting
+       root :environment
+       (km-py--alist-delete (km-py--project-setting root :environment) name)))
+    (message "km-py: Removed %s from %s scope" name
+             (if buffer-local "buffer" "project-session"))))
+
+;;;###autoload
+(defun km-py-run-add-pythonpath (directory &optional buffer-local)
+  "Add DIRECTORY to `PYTHONPATH' for Python runs.
+
+By default, remember it for the current project and Emacs session.  With prefix
+argument BUFFER-LOCAL, add it only in the current buffer."
+  (interactive
+   (let ((root (km-py--current-project-root-or-error)))
+     (list (read-directory-name "Add Python import root: " root nil t)
+           current-prefix-arg)))
+  (let* ((root (km-py--current-project-root-or-error))
+         (path (directory-file-name (expand-file-name directory root))))
+    (unless (file-directory-p path)
+      (user-error "km-py: Not a directory: %s" path))
+    (if buffer-local
+        (setq-local km-py-run-pythonpath
+                    (cons path
+                          (delete path
+                                  (when (local-variable-p 'km-py-run-pythonpath)
+                                    km-py-run-pythonpath))))
+      (km-py--set-project-setting
+       root :pythonpath
+       (cons path (delete path (km-py--project-setting root :pythonpath)))))
+    (message "km-py: Added %s to %s PYTHONPATH" path
+             (if buffer-local "buffer" "project-session"))))
+
+;;;###autoload
+(defun km-py-run-clear-project-settings ()
+  "Clear all session-local run settings for the current Python project."
+  (interactive)
+  (let ((root (km-py--canonical-root
+               (km-py--current-project-root-or-error))))
+    (remhash root km-py--project-run-settings)
+    (remhash root km-py--last-run-contexts)
+    (message "km-py: Cleared project-session settings for %s" root)))
+
+(defun km-py--display-environment-value (name value)
+  "Return display representation of environment NAME and VALUE."
+  (let ((case-fold-search t))
+    (if (string-match-p km-py-run-redact-environment-regexp name)
+        "<redacted>"
+      (prin1-to-string value))))
+
+;;;###autoload
+(defun km-py-run-describe-context (&optional mode)
+  "Display the resolved run context for the current buffer.
+
+Optional MODE defaults to `auto'.  Sensitive environment values are redacted
+according to `km-py-run-redact-environment-regexp'."
+  (interactive)
+  (let* ((context (km-py-resolve-run-context buffer-file-name
+                                             (or mode 'auto)
+                                             nil))
+         (buffer (get-buffer-create "*km-py run context*")))
+    (with-current-buffer buffer
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert (format "Project root:  %s\n" (km-py-run-context-root context))
+                (format "Working dir:   %s\n" (km-py-run-context-cwd context))
+                (format "Interpreter:   %s\n" (km-py-run-context-interpreter context))
+                (format "Mode:          %s\n" (km-py-run-context-mode context))
+                (format "Target:        %s\n" (km-py-run-context-target context))
+                (format "Command:       %s\n"
+                        (km-py--command-string
+                         (km-py-run-context-command context)))
+                "\nPYTHONPATH:\n")
+        (dolist (path (km-py-run-context-pythonpath context))
+          (insert (format "  %s\n" path)))
+        (insert "\nEnvironment overrides:\n")
+        (if-let* ((overrides
+                   (km-py-run-context-environment-overrides context)))
+            (dolist (entry overrides)
+              (insert (format "  %s=%s\n" (car entry)
+                              (km-py--display-environment-value
+                               (car entry) (cdr entry)))))
+          (insert "  <none>\n"))
+        (special-mode)))
+    (pop-to-buffer buffer)))
+
+
+(defun km-py--shell-environment-strings (base overrides)
+  "Return shell environment strings from BASE with OVERRIDES applied."
+  (let ((result (copy-sequence base)))
+    (dolist (entry overrides result)
+      (setq result (km-py--environment-set (car entry) (cdr entry) result)))))
+
+(defun km-py--shell-context-signature (root interpreter overrides paths)
+  "Return a comparable shell signature for ROOT, INTERPRETER, OVERRIDES, PATHS."
+  (list (km-py--canonical-root root) interpreter
+        (sort (copy-tree overrides)
+              (lambda (left right) (string< (car left) (car right))))
+        paths))
+
+(defun km-py-apply-shell-context ()
+  "Apply current project run settings to subsequently created Python shells.
+
+This function configures buffer-local Python shell variables.  It does not
+modify a shell that is already running and does not mutate Emacs's global
+process environment."
+  (interactive)
+  (let* ((root (km-py--canonical-root
+                (km-py--current-project-root-or-error)))
+         (interpreter (km-py--run-interpreter root))
+         (overrides (km-py--effective-run-environment root))
+         (environment
+          (km-py--apply-environment-overrides
+           (km-py--apply-interpreter-environment process-environment interpreter)
+           overrides))
+         (paths (km-py--context-pythonpath root nil environment))
+         (shell-overrides
+          (km-py--merge-environment-alists
+           (when (km-py--interpreter-venv interpreter)
+             (list (cons "VIRTUAL_ENV"
+                         (km-py--environment-get "VIRTUAL_ENV" environment))
+                   (cons "PATH" (km-py--environment-get "PATH" environment))))
+           overrides)))
+    (unless km-py--shell-context-captured
+      (setq-local km-py--shell-base-extra-pythonpaths
+                  (copy-sequence python-shell-extra-pythonpaths))
+      (when (boundp 'python-shell-process-environment)
+        (setq-local km-py--shell-base-process-environment
+                    (copy-sequence python-shell-process-environment)))
+      (setq-local km-py--shell-context-captured t))
+    (setq-local python-shell-interpreter interpreter
+                python-interpreter interpreter
+                python-shell-extra-pythonpaths
+                (km-py--delete-duplicates-by
+                 (append paths km-py--shell-base-extra-pythonpaths)
+                 (lambda (path)
+                   (if (file-exists-p path) (file-truename path) path))))
+    (when (boundp 'python-shell-process-environment)
+      (setq-local python-shell-process-environment
+                  (km-py--shell-environment-strings
+                   km-py--shell-base-process-environment shell-overrides)))
+    (setq-local km-py--shell-context-signature
+                (km-py--shell-context-signature
+                 root interpreter overrides python-shell-extra-pythonpaths))))
+
+(defun km-py--mark-shell-context (process)
+  "Record the current source buffer's context signature on PROCESS."
+  (when (processp process)
+    (process-put process 'km-py-shell-context-signature
+                 km-py--shell-context-signature)))
+
+(defun km-py--warn-stale-shell-context (process)
+  "Warn once when PROCESS does not match the desired shell context."
+  (let ((running (process-get process 'km-py-shell-context-signature)))
+    (when (and running
+               (not (equal running km-py--shell-context-signature))
+               (not (equal km-py--shell-context-warning-signature
+                           km-py--shell-context-signature)))
+      (setq-local km-py--shell-context-warning-signature
+                  km-py--shell-context-signature)
+      (message "km-py: Python settings changed; restart the shell to apply them"))))
 
 (defun km-py-run-shell (&rest _)
-  "Start a Python shell if not already running."
-  (unless (python-shell-get-process)
+  "Start a project-configured Python shell if one is not already running."
+  (km-py-apply-shell-context)
+  (if-let* ((process (python-shell-get-process)))
+      (km-py--warn-stale-shell-context process)
     (let ((current-prefix-arg '(4)))
-      (call-interactively #'run-python))))
+      (when-let* ((process (call-interactively #'run-python)))
+        (km-py--mark-shell-context process)))))
 
 (defun km-py--advice-shell-commands ()
   "Add `km-py-run-shell' advice to Python shell commands.
@@ -593,13 +1413,8 @@ Add a specified function as a before advice to each command in the list."
 
 
 (defun km-py-setup-python-path ()
-  "Add the project's root directory to `python-shell-extra-pythonpaths'."
-  (when-let* ((proj (km-py-project-root)))
-    (setq proj (expand-file-name proj))
-    (unless (member proj python-shell-extra-pythonpaths)
-      (setq-local python-shell-extra-pythonpaths
-                  (append python-shell-extra-pythonpaths
-                          (list proj))))))
+  "Apply project import roots to `python-shell-extra-pythonpaths'."
+  (km-py-apply-shell-context))
 
 (defun km-py--run-in-buffer (buffer timer-sym fn &rest args)
   "Run a function FN in a BUFFER and cancel timer TIMER-SYM.
@@ -639,13 +1454,8 @@ TIMER-SYM is a symbol to use as a timer."
 
 (defvar-local km-py--shell-timer nil)
 
-(defvar km-py-send-file-code "
-try:
-    __file__
-except Exception:
-    __file__ = %s
-"
-  "String template for handling `__file__' variable in Python code.")
+(defvar km-py-send-file-code "__file__ = %s\n"
+  "String template for updating `__file__' before evaluating Python code.")
 
 (defun km-py--send-buffer (proc)
   "Send the current buffer's content to a live Python process PROC.
@@ -665,12 +1475,14 @@ Argument PROC is a process object representing the Python subprocess."
 
 Optional argument PROC-WND is a window object that, if live, will be
 used to display the Python process buffer."
+  (km-py-apply-shell-context)
   (when-let* ((wnd (selected-window))
               (new-proc (with-selected-window wnd
                           (run-python (python-shell-calculate-command)
                                       python-shell-dedicated
                                       (not proc-wnd))))
               (buff (process-buffer new-proc)))
+    (km-py--mark-shell-context new-proc)
     (when (window-live-p proc-wnd)
       (with-selected-window proc-wnd
         (pop-to-buffer-same-window buff)))
