@@ -231,5 +231,33 @@
       (should (equal (default-value 'process-environment) original-process))
       (should (equal (default-value 'exec-path) original-exec-path)))))
 
+(ert-deftest km-py-process-context-preserves-global-npm-pyright ()
+  (km-py-test--with-project (root)
+    (let* ((venv (expand-file-name ".venv" root))
+           (venv-bin (expand-file-name "bin" venv))
+           (global-bin (expand-file-name "global-node-bin" root))
+           (python (km-py-test--write-file
+                    root ".venv/bin/python" "#!/bin/sh\nexit 0\n"))
+           (global-pyright (km-py-test--write-file
+                            root "global-node-bin/pyright-langserver"
+                            "#!/bin/sh\nexit 0\n")))
+      (km-py-test--write-file root ".venv/bin/activate" "")
+      (km-py-test--write-file root ".venv/pyvenv.cfg" "home = /usr/bin\n")
+      (set-file-modes python #o755)
+      (set-file-modes global-pyright #o755)
+      (with-temp-buffer
+        (setq default-directory root
+              buffer-file-name
+              (km-py-test--write-file root "sample.py" ""))
+        (setq-local process-environment
+                    (km-py--environment-set
+                     "PATH" global-bin (copy-sequence process-environment))
+                    exec-path (list global-bin))
+        (km-py-apply-shell-context)
+        (should (equal (car exec-path) (file-truename venv-bin)))
+        (should (member (file-truename global-bin) exec-path))
+        (should (equal (executable-find "pyright-langserver")
+                       (file-truename global-pyright)))))))
+
 (provide 'km-py-tests)
 ;;; km-py-tests.el ends here
