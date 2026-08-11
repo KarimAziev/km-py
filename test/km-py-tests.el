@@ -255,9 +255,10 @@
                     exec-path (list global-bin))
         (km-py-apply-shell-context)
         (should (equal (car exec-path) (file-truename venv-bin)))
-        (should (member (file-truename global-bin) exec-path))
-        (should (equal (executable-find "pyright-langserver")
-                       (file-truename global-pyright)))))))
+        (should (seq-some (lambda (path) (file-equal-p path global-bin))
+                          exec-path))
+        (should (file-equal-p (executable-find "pyright-langserver")
+                              global-pyright))))))
 
 (provide 'km-py-tests)
 ;;; km-py-tests.el ends here
