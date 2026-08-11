@@ -177,6 +177,12 @@ passed to the Python process."
 (defvar-local km-py--shell-base-extra-pythonpaths nil
   "Original `python-shell-extra-pythonpaths' before km-py additions.")
 
+(defvar-local km-py--base-process-environment nil
+  "Original buffer process environment before km-py project settings.")
+
+(defvar-local km-py--base-exec-path nil
+  "Original buffer variable `exec-path' before km-py project settings.")
+
 (defvar-local km-py--shell-context-captured nil
   "Non-nil after original inferior-shell settings have been captured.")
 
@@ -1314,12 +1320,24 @@ according to `km-py-run-redact-environment-regexp'."
         paths))
 
 (defun km-py-apply-shell-context ()
-  "Apply current project run settings to subsequently created Python shells.
+  "Apply project settings to subsequently created Python subprocesses.
 
-This function configures buffer-local Python shell variables.  It does not
-modify a shell that is already running and does not mutate Emacs's global
-process environment."
+This function configures `process-environment', variable `exec-path', and
+Python shell variables buffer-locally.  Eglot, Flymake, and inferior Python
+processes started from the buffer consequently inherit the selected virtual
+environment.  It does not modify a process that is already running and does
+not mutate Emacs's global process environment."
   (interactive)
+  (unless km-py--shell-context-captured
+    (setq-local km-py--base-process-environment
+                (copy-sequence process-environment)
+                km-py--base-exec-path (copy-sequence exec-path)
+                km-py--shell-base-extra-pythonpaths
+                (copy-sequence python-shell-extra-pythonpaths))
+    (when (boundp 'python-shell-process-environment)
+      (setq-local km-py--shell-base-process-environment
+                  (copy-sequence python-shell-process-environment)))
+    (setq-local km-py--shell-context-captured t))
   (let* ((root (km-py--canonical-root
                 (km-py--current-project-root-or-error)))
          (interpreter (km-py--run-interpreter root))
@@ -1327,9 +1345,23 @@ process environment."
          (environment
           (km-py--apply-environment-overrides
            (km-py--apply-interpreter-environment
-            process-environment interpreter)
+            km-py--base-process-environment interpreter)
            overrides))
          (paths (km-py--context-pythonpath root nil environment))
+         (environment
+          (km-py--environment-set
+           "PYTHONPATH" (km-py--join-path-list paths) environment))
+         (environment-path
+          (km-py--split-path-list
+           (km-py--environment-get "PATH" environment)))
+         (resolved-exec-path
+          (km-py--delete-duplicates-by
+           (append environment-path
+                   (when (member nil km-py--base-exec-path) (list nil)))
+           (lambda (path)
+             (cond ((null path) nil)
+                   ((file-exists-p path) (file-truename path))
+                   (t path)))))
          (shell-overrides
           (km-py--merge-environment-alists
            (when (km-py--interpreter-venv interpreter)
@@ -1337,20 +1369,17 @@ process environment."
                          (km-py--environment-get "VIRTUAL_ENV" environment))
                    (cons "PATH" (km-py--environment-get "PATH" environment))))
            overrides)))
-    (unless km-py--shell-context-captured
-      (setq-local km-py--shell-base-extra-pythonpaths
-                  (copy-sequence python-shell-extra-pythonpaths))
-      (when (boundp 'python-shell-process-environment)
-        (setq-local km-py--shell-base-process-environment
-                    (copy-sequence python-shell-process-environment)))
-      (setq-local km-py--shell-context-captured t))
-    (setq-local python-shell-interpreter interpreter
+    (setq-local process-environment environment
+                exec-path resolved-exec-path
+                python-shell-interpreter interpreter
                 python-interpreter interpreter
                 python-shell-extra-pythonpaths
                 (km-py--delete-duplicates-by
                  (append paths km-py--shell-base-extra-pythonpaths)
                  (lambda (path)
                    (if (file-exists-p path) (file-truename path) path))))
+    (when-let* ((venv (km-py--interpreter-venv interpreter)))
+      (setq-local python-shell-virtualenv-root venv))
     (when (boundp 'python-shell-process-environment)
       (setq-local python-shell-process-environment
                   (km-py--shell-environment-strings

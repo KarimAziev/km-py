@@ -173,7 +173,9 @@
 (ert-deftest km-py-shell-context-is-buffer-local ()
   (km-py-test--with-project (root)
     (let ((python (or (executable-find "python3") (executable-find "python")))
-          (original-process (copy-sequence process-environment)))
+          (original-process (copy-sequence
+                             (default-value 'process-environment)))
+          (original-exec-path (copy-sequence (default-value 'exec-path))))
       (with-temp-buffer
         (setq default-directory root
               buffer-file-name
@@ -187,7 +189,47 @@
         (when (boundp 'python-shell-process-environment)
           (should (member "KM_PY_SHELL=yes"
                           python-shell-process-environment)))
-        (should (equal process-environment original-process))))))
+        (should (local-variable-p 'process-environment))
+        (should (equal (km-py--environment-get
+                        "KM_PY_SHELL" process-environment)
+                       "yes")))
+      (should (equal (default-value 'process-environment) original-process))
+      (should (equal (default-value 'exec-path) original-exec-path)))))
+
+(ert-deftest km-py-process-context-exposes-venv-to-eglot ()
+  (km-py-test--with-project (root)
+    (let* ((venv (expand-file-name ".venv" root))
+           (bin (expand-file-name "bin" venv))
+           (python (km-py-test--write-file
+                    root ".venv/bin/python" "#!/bin/sh\nexit 0\n"))
+           (pyright (km-py-test--write-file
+                     root ".venv/bin/pyright-langserver"
+                     "#!/bin/sh\nexit 0\n"))
+           (original-process (copy-sequence
+                              (default-value 'process-environment)))
+           (original-exec-path (copy-sequence (default-value 'exec-path))))
+      (km-py-test--write-file root ".venv/bin/activate" "")
+      (km-py-test--write-file root ".venv/pyvenv.cfg" "home = /usr/bin\n")
+      (set-file-modes python #o755)
+      (set-file-modes pyright #o755)
+      (with-temp-buffer
+        (setq default-directory root
+              buffer-file-name
+              (km-py-test--write-file root "sample.py" ""))
+        (km-py-apply-shell-context)
+        (should (equal python-shell-interpreter (file-truename python)))
+        (should (equal (km-py--environment-get
+                        "VIRTUAL_ENV" process-environment)
+                       (directory-file-name (file-truename venv))))
+        (should (equal (car exec-path) (file-truename bin)))
+        (should (equal (executable-find "pyright-langserver")
+                       (file-truename pyright)))
+        (should (member (directory-file-name (file-truename root))
+                        (km-py--split-path-list
+                         (km-py--environment-get
+                          "PYTHONPATH" process-environment)))))
+      (should (equal (default-value 'process-environment) original-process))
+      (should (equal (default-value 'exec-path) original-exec-path)))))
 
 (provide 'km-py-tests)
 ;;; km-py-tests.el ends here

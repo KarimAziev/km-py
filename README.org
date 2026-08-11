@@ -194,6 +194,11 @@ and import-root settings.  Before starting a shell, km-py configures
 =python-shell-process-environment= and =python-shell-extra-pythonpaths=
 buffer-locally.  It does not globally activate the virtual environment.
 
+The same setup makes =process-environment= and =exec-path= buffer-local before
+calling =eglot-ensure=.  Consequently Eglot can find a language server installed
+inside =.venv= and Pyright inherits =VIRTUAL_ENV=, =PATH=, and =PYTHONPATH=
+without switching the environment used by unrelated Emacs buffers.
+
 Environment changes cannot alter a Python process that is already running.  If
 km-py detects that a managed shell was started with different settings, it
 prints a message asking you to restart the shell before relying on the new
